@@ -1,3 +1,5 @@
+export type ReviewCommentType = 'commit-suggestion' | 'fix-with-copilot';
+
 export interface ReviewComment {
   id: number;
   path: string;
@@ -5,6 +7,17 @@ export interface ReviewComment {
   body: string;
   diffHunk: string;
   htmlUrl: string;
+  type?: ReviewCommentType;
+}
+
+export interface PrMetadata {
+  title: string;
+  assignee: string | null;
+  filesChangedCount: number;
+}
+
+function detectCommentType(body: string): ReviewCommentType {
+  return /^```suggestion/m.test(body) ? 'commit-suggestion' : 'fix-with-copilot';
 }
 
 interface GitHubPrComment {
@@ -142,6 +155,7 @@ export async function fetchCopilotComments(
         body: c.body,
         diffHunk: c.diff_hunk,
         htmlUrl: c.html_url,
+        type: detectCommentType(c.body),
       });
     }
 
@@ -153,6 +167,46 @@ export async function fetchCopilotComments(
 
   outputChannel?.appendLine(`[githubApi] total inline comments: ${totalSeen}, Copilot comments: ${all.length}, outdated skipped: ${outdatedCount}`);
   return { comments: all, outdatedCount };
+}
+
+// ─── Fetch PR metadata ────────────────────────────────────────────────────────
+
+interface GitHubPrApiResponse {
+  state: string;
+  merged: boolean;
+  title: string;
+  assignees: Array<{ login: string }>;
+  changed_files: number;
+}
+
+export async function fetchPrMetadata(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<PrMetadata> {
+  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}`;
+  let response: Response;
+  try {
+    response = await fetchWithRetry(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+  } catch {
+    return { title: '', assignee: null, filesChangedCount: 0 };
+  }
+  if (!response.ok) {
+    return { title: '', assignee: null, filesChangedCount: 0 };
+  }
+  const data = await response.json() as GitHubPrApiResponse;
+  return {
+    title: data.title ?? '',
+    assignee: data.assignees?.[0]?.login ?? null,
+    filesChangedCount: data.changed_files ?? 0,
+  };
 }
 
 // ─── Fetch PR state ───────────────────────────────────────────────────────────

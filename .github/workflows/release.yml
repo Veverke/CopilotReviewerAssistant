@@ -1,0 +1,92 @@
+name: Release (tag-based)
+
+# Triggered by a version tag push (e.g. v0.1.0) or manually via workflow_dispatch.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.1.0) — must match package.json'
+        required: true
+
+jobs:
+
+  # ── Verify the pushed tag matches package.json version ───────────────────────
+  verify-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Verify version matches package.json
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            INPUT_VERSION="${{ github.event.inputs.version }}"
+          else
+            INPUT_VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$INPUT_VERSION" != "$PKG_VERSION" ]; then
+            echo "Tag version ($INPUT_VERSION) does not match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+
+  # ── Build, test, and package the VSIX ────────────────────────────────────────
+  build:
+    needs: verify-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm run test:unit
+
+      - name: Compile TypeScript
+        run: npm run compile
+
+      - name: Package VSIX
+        run: npx @vscode/vsce package --no-dependencies
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: '*.vsix'
+
+  # ── Publish to VS Code Marketplace and Open VSX ──────────────────────────────
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vsix
+
+      - name: Install vsce and ovsx
+        run: npm install -g @vscode/vsce ovsx
+
+      - name: Publish to VS Code Marketplace
+        run: vsce publish --packagePath *.vsix -p ${{ secrets.VSCE_TOKEN }}
+
+      - name: Publish to Open VSX Registry
+        run: ovsx publish *.vsix -p ${{ secrets.OVSX_TOKEN }}

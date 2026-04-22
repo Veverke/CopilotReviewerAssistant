@@ -3,7 +3,8 @@
 import * as vscode from 'vscode';
 import { getGitHubToken } from './auth';
 import { promptForPrUrl, parsePrUrl } from './prInput';
-import { fetchCopilotComments, fetchPrState, postReplyComment, resolveReviewThread } from './githubApi';
+import { fetchCopilotComments, fetchPrState, fetchPrMetadata, postReplyComment, resolveReviewThread } from './githubApi';
+import type { PrMetadata } from './githubApi';
 import { generateAllWorkPlans } from './workPlanGenerator';
 import { ReviewPanel } from './reviewPanel';
 import { applyFix, resolveWorkspaceFile } from './fixApplier';
@@ -43,46 +44,59 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		let fetchResult: { comments: import('./githubApi').ReviewComment[]; outdatedCount: number };
+		// Open the panel immediately with a loading skeleton
+		const panel = ReviewPanel.showLoading(context, rawUrl);
+
+		let fetchResult: { comments: import('./githubApi').ReviewComment[]; outdatedCount: number } | undefined;
+		let annotated: import('./workPlanGenerator').AnnotatedComment[] | undefined;
+		let prStateResult: { state: string; merged: boolean } | undefined;
+		let prMeta: PrMetadata | undefined;
+
 		try {
-			outputChannel.show(true);
-			fetchResult = await fetchCopilotComments(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber, outputChannel);
+			await vscode.window.withProgress(
+				{ location: vscode.ProgressLocation.Window, title: 'Fetching PR data…', cancellable: false },
+				async () => {
+					try {
+						outputChannel.show(true);
+						fetchResult = await fetchCopilotComments(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber, outputChannel);
+					} catch (err: unknown) {
+						const errMsg = err instanceof Error ? err.message : '';
+						if (errMsg.includes('authentication failed')) {
+							try {
+								token = await getGitHubToken();
+							} catch {
+								throw err;
+							}
+							fetchResult = await fetchCopilotComments(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber, outputChannel);
+						} else {
+							throw err;
+						}
+					}
+
+					const { comments } = fetchResult!;
+
+					[annotated, prStateResult, prMeta] = await Promise.all([
+						generateAllWorkPlans(comments),
+						fetchPrState(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber),
+						fetchPrMetadata(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber),
+					]);
+
+					// Pre-flight: check which files are present in the workspace
+					for (const item of annotated) {
+						const uri = await resolveWorkspaceFile(item.comment.path);
+						item.fileFound = uri !== undefined;
+					}
+				}
+			);
 		} catch (err: unknown) {
-			const errMsg = err instanceof Error ? err.message : '';
-			if (errMsg.includes('authentication failed')) {
-				try {
-					token = await getGitHubToken();
-				} catch {
-					vscode.window.showErrorMessage(errMsg);
-					return;
-				}
-				try {
-					fetchResult = await fetchCopilotComments(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber, outputChannel);
-				} catch (retryErr: unknown) {
-					vscode.window.showErrorMessage(retryErr instanceof Error ? retryErr.message : 'An unknown error occurred while fetching PR comments.');
-					return;
-				}
-			} else {
-				vscode.window.showErrorMessage(errMsg || 'An unknown error occurred while fetching PR comments.');
-				return;
-			}
+			const message = err instanceof Error ? err.message : 'An unknown error occurred while loading PR data.';
+			panel.showError(message);
+			vscode.window.showErrorMessage(message);
+			return;
 		}
 
-		const { comments, outdatedCount } = fetchResult!;
-
-		const [annotated, prStateResult] = await Promise.all([
-			generateAllWorkPlans(comments),
-			fetchPrState(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber),
-		]);
-
-		// Pre-flight: check which files are present in the workspace
-		for (const item of annotated) {
-			const uri = await resolveWorkspaceFile(item.comment.path);
-			item.fileFound = uri !== undefined;
-		}
-
-		const panel = ReviewPanel.createOrShow(context, rawUrl, annotated, (selectedIds) => {
-			const selected = annotated.filter((a) => selectedIds.includes(a.comment.id));
+		panel.setContent(rawUrl, annotated!, prMeta!, (selectedIds) => {
+			const selected = annotated!.filter((a) => selectedIds.includes(a.comment.id));
 			void (async () => {
 				for (const item of selected) {
 					await applyFix(item, (status) => {
@@ -142,7 +156,7 @@ export function activate(context: vscode.ExtensionContext) {
 				}
 			})();
 		}, (id) => {
-			const item = annotated.find((a) => a.comment.id === id);
+			const item = annotated!.find((a) => a.comment.id === id);
 			if (item) {
 				void applyFix(item, (status) => {
 					panel.postFixStatus(status);
@@ -150,11 +164,12 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 		});
 
+		const { outdatedCount } = fetchResult!;
 		if (outdatedCount > 0) {
 			panel.postBanner(`${outdatedCount} outdated comment(s) were excluded.`, 'warning');
 		}
-		if (prStateResult.state !== 'unknown' && prStateResult.state !== 'open') {
-			const label = prStateResult.merged ? 'merged' : prStateResult.state;
+		if (prStateResult!.state !== 'unknown' && prStateResult!.state !== 'open') {
+			const label = prStateResult!.merged ? 'merged' : prStateResult!.state;
 			panel.postBanner(`Note: this PR is ${label}. Fixes will still be applied locally.`, 'info');
 		}
 	});

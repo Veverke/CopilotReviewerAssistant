@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import { AnnotatedComment } from './workPlanGenerator';
+import { PrMetadata } from './githubApi';
 import { FixStatus, DoneFixResult } from './fixApplier';
 import { GitStatus } from './gitHelper';
 
@@ -16,11 +17,49 @@ export class ReviewPanel {
   private _onStageCommitAndPush: ((doneResults: DoneFixResult[]) => void) | undefined;
   private _onRetryFix: ((id: number) => void) | undefined;
   private _doneResults: DoneFixResult[] = [];
+  private _prMeta: PrMetadata = { title: '', assignee: null, filesChangedCount: 0 };
+
+  public static showLoading(context: vscode.ExtensionContext, prUrl: string): ReviewPanel {
+    const column = vscode.window.activeTextEditor
+      ? vscode.window.activeTextEditor.viewColumn
+      : undefined;
+
+    if (ReviewPanel.currentPanel) {
+      ReviewPanel.currentPanel._panel.reveal(column);
+      ReviewPanel.currentPanel._onApplyFixes = undefined;
+      ReviewPanel.currentPanel._onStageCommitAndPush = undefined;
+      ReviewPanel.currentPanel._onRetryFix = undefined;
+      ReviewPanel.currentPanel._doneResults = [];
+      ReviewPanel.currentPanel._panel.webview.html =
+        ReviewPanel.currentPanel._getLoadingHtml(ReviewPanel.currentPanel._panel.webview, prUrl);
+      return ReviewPanel.currentPanel;
+    }
+
+    const mediaUri = vscode.Uri.joinPath(context.extensionUri, 'media');
+    const panel = vscode.window.createWebviewPanel(
+      ReviewPanel.viewType,
+      'Copilot Reviewer Assistant',
+      column ?? vscode.ViewColumn.One,
+      {
+        enableScripts: true,
+        localResourceRoots: [mediaUri],
+        retainContextWhenHidden: true,
+      }
+    );
+
+    ReviewPanel.currentPanel = new ReviewPanel(
+      panel, mediaUri, prUrl, null,
+      { title: '', assignee: null, filesChangedCount: 0 },
+      undefined, undefined, undefined
+    );
+    return ReviewPanel.currentPanel;
+  }
 
   public static createOrShow(
     context: vscode.ExtensionContext,
     prUrl: string,
     comments: AnnotatedComment[],
+    prMeta: PrMetadata,
     onApplyFixes: (selectedIds: number[]) => void,
     onStageCommitAndPush: (doneResults: DoneFixResult[]) => void,
     onRetryFix: (id: number) => void
@@ -31,6 +70,7 @@ export class ReviewPanel {
 
     if (ReviewPanel.currentPanel) {
       ReviewPanel.currentPanel._panel.reveal(column);
+      ReviewPanel.currentPanel._prMeta = prMeta;
       ReviewPanel.currentPanel._update(prUrl, comments);
       ReviewPanel.currentPanel._onApplyFixes = onApplyFixes;
       ReviewPanel.currentPanel._onStageCommitAndPush = onStageCommitAndPush;
@@ -52,7 +92,7 @@ export class ReviewPanel {
       }
     );
 
-    ReviewPanel.currentPanel = new ReviewPanel(panel, mediaUri, prUrl, comments, onApplyFixes, onStageCommitAndPush, onRetryFix);
+    ReviewPanel.currentPanel = new ReviewPanel(panel, mediaUri, prUrl, comments, prMeta, onApplyFixes, onStageCommitAndPush, onRetryFix);
     return ReviewPanel.currentPanel;
   }
 
@@ -60,18 +100,24 @@ export class ReviewPanel {
     panel: vscode.WebviewPanel,
     mediaUri: vscode.Uri,
     prUrl: string,
-    comments: AnnotatedComment[],
-    onApplyFixes: (selectedIds: number[]) => void,
-    onStageCommitAndPush: (doneResults: DoneFixResult[]) => void,
-    onRetryFix: (id: number) => void
+    comments: AnnotatedComment[] | null,
+    prMeta: PrMetadata,
+    onApplyFixes: ((selectedIds: number[]) => void) | undefined,
+    onStageCommitAndPush: ((doneResults: DoneFixResult[]) => void) | undefined,
+    onRetryFix: ((id: number) => void) | undefined
   ) {
     this._panel = panel;
     this._mediaUri = mediaUri;
     this._onApplyFixes = onApplyFixes;
     this._onStageCommitAndPush = onStageCommitAndPush;
     this._onRetryFix = onRetryFix;
+    this._prMeta = prMeta;
 
-    this._update(prUrl, comments);
+    if (comments === null) {
+      this._panel.webview.html = this._getLoadingHtml(this._panel.webview, prUrl);
+    } else {
+      this._update(prUrl, comments);
+    }
 
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
@@ -90,14 +136,86 @@ export class ReviewPanel {
     );
   }
 
+  public setContent(
+    prUrl: string,
+    comments: AnnotatedComment[],
+    prMeta: PrMetadata,
+    onApplyFixes: (selectedIds: number[]) => void,
+    onStageCommitAndPush: (doneResults: DoneFixResult[]) => void,
+    onRetryFix: (id: number) => void
+  ): void {
+    this._prMeta = prMeta;
+    this._onApplyFixes = onApplyFixes;
+    this._onStageCommitAndPush = onStageCommitAndPush;
+    this._onRetryFix = onRetryFix;
+    this._doneResults = [];
+    this._update(prUrl, comments);
+  }
+
+  public showError(message: string): void {
+    this._panel.webview.html = this._getErrorHtml(this._panel.webview, message);
+  }
+
   private _update(prUrl: string, comments: AnnotatedComment[]): void {
-    this._panel.webview.html = this._getHtmlForWebview(this._panel.webview, prUrl, comments);
+    this._panel.webview.html = this._getHtmlForWebview(this._panel.webview, prUrl, comments, this._prMeta);
+  }
+
+  private _getLoadingHtml(webview: vscode.Webview, prUrl: string): string {
+    const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._mediaUri, 'panel.css'));
+    const urlMatch = prUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+    const repoLabel = urlMatch ? `${urlMatch[1]}/${urlMatch[2]}` : prUrl;
+    const prNumber = urlMatch ? `#${urlMatch[3]}` : '';
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource};" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link href="${cssUri}" rel="stylesheet" />
+  <title>Copilot Reviewer Assistant</title>
+</head>
+<body>
+  <div class="pr-header">
+    <h1>Copilot Reviewer Assistant</h1>
+    <div class="pr-header-meta">
+      <span class="pr-meta-item"><span class="pr-meta-key">Repo:</span> ${escapeHtml(repoLabel)} ${escapeHtml(prNumber)}</span>
+    </div>
+  </div>
+  <div class="loading-state">
+    <div class="loading-spinner" role="status" aria-label="Loading PR data"></div>
+    <div class="loading-message">Fetching PR data…</div>
+  </div>
+</body>
+</html>`;
+  }
+
+  private _getErrorHtml(webview: vscode.Webview, message: string): string {
+    const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._mediaUri, 'panel.css'));
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource};" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link href="${cssUri}" rel="stylesheet" />
+  <title>Copilot Reviewer Assistant</title>
+</head>
+<body>
+  <div class="pr-header">
+    <h1>Copilot Reviewer Assistant</h1>
+  </div>
+  <div class="loading-state">
+    <div class="error-message">${escapeHtml(message)}</div>
+  </div>
+</body>
+</html>`;
   }
 
   private _getHtmlForWebview(
     webview: vscode.Webview,
     prUrl: string,
-    comments: AnnotatedComment[]
+    comments: AnnotatedComment[],
+    prMeta: PrMetadata
   ): string {
     const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._mediaUri, 'panel.css'));
     const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._mediaUri, 'panel.js'));
@@ -108,6 +226,12 @@ export class ReviewPanel {
     const repoLabel = urlMatch ? `${urlMatch[1]}/${urlMatch[2]}` : prUrl;
     const prNumber = urlMatch ? `#${urlMatch[3]}` : '';
 
+    // Recommendation type counts
+    const fixWithCopilotCount = comments.filter(
+      ({ comment }) => (comment.type ?? 'fix-with-copilot') === 'fix-with-copilot'
+    ).length;
+    const commitSuggestionCount = comments.length - fixWithCopilotCount;
+
     const cardsHtml = comments.length === 0
       ? `<div class="empty-state">
         <svg class="empty-icon" width="48" height="48" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor" aria-hidden="true">
@@ -116,14 +240,18 @@ export class ReviewPanel {
         <p>No pending Copilot review recommendations found for this PR.</p>
         <p class="empty-sub">Try a PR that has been reviewed by GitHub Copilot.</p>
       </div>`
-      : comments.map(({ comment, workPlan, fileFound }) => {
+      : comments.map(({ comment, workPlan, fileFound, complexity }, index) => {
         const fileNotFound = fileFound === false;
         const linkHref = safeGithubUrl(comment.htmlUrl);
         const linkHtml = linkHref
           ? `<a class="comment-link" href="${linkHref}" target="_blank">View on GitHub ↗</a>`
           : '';
+        const commentType = comment.type ?? 'fix-with-copilot';
+        const complexityLevel = complexity ?? 'low';
+        const complexityLabel = complexityLevel === 'low' ? 'LOW' : complexityLevel === 'medium' ? 'MED' : 'HIGH';
+        const number = index + 1;
         return `
-        <div class="card">
+        <div class="card" data-id="${comment.id}" data-file="${escapeHtml(comment.path)}" data-type="${commentType}" data-complexity="${complexityLevel}" data-number="${number}">
           <input
             type="checkbox"
             class="comment-checkbox"
@@ -133,9 +261,11 @@ export class ReviewPanel {
           />
           <div class="card-body">
             <div class="card-header">
+              <span class="card-number">#${number}</span>
               <span class="badge" title="${escapeHtml(comment.path)}">${escapeHtml(comment.path)}</span>
               <span class="line-num">line ${comment.line}</span>
-              ${fileNotFound ? '<span class="badge badge-warning">File not in workspace</span>' : ''}
+              <span class="complexity-badge complexity-${complexityLevel}" title="Complexity: ${complexityLevel}">${complexityLabel}</span>
+              ${fileNotFound ? '<span class="badge badge-warning" title="This file does not exist in the current workspace. The fix cannot be applied automatically.">File not found locally</span>' : ''}
               ${linkHtml}
             </div>
             <details>
@@ -161,8 +291,20 @@ export class ReviewPanel {
   <title>Copilot Reviewer Assistant</title>
 </head>
 <body>
-  <h1>Copilot Reviewer Assistant</h1>
-  <p class="pr-meta">${escapeHtml(repoLabel)} ${escapeHtml(prNumber)} &mdash; ${comments.length} recommendation${comments.length === 1 ? '' : 's'}</p>
+  <div class="pr-header">
+    <h1>Copilot Reviewer Assistant</h1>
+    ${prMeta.title ? `<div class="pr-header-title"><span class="pr-meta-key">PR Title:</span> ${escapeHtml(prMeta.title)}</div>` : ''}
+    <div class="pr-header-meta">
+      <span class="pr-meta-item"><span class="pr-meta-key">Repo:</span> ${escapeHtml(repoLabel)} ${escapeHtml(prNumber)}</span>
+      ${prMeta.assignee ? `<span class="pr-meta-item"><span class="pr-meta-key">Assignee:</span> ${escapeHtml(prMeta.assignee)}</span>` : ''}
+      ${prMeta.filesChangedCount > 0 ? `<span class="pr-meta-item"><span class="pr-meta-key">Files changed:</span> ${prMeta.filesChangedCount}</span>` : ''}
+    </div>
+    <div class="pr-header-pills">
+      <span class="pill pill-total">${comments.length} total</span>
+      <span class="pill pill-fix-copilot">${fixWithCopilotCount} Fix With Copilot</span>
+      <span class="pill pill-commit-suggestion">${commitSuggestionCount} Commit Suggestion</span>
+    </div>
+  </div>
   <div id="banner-area"></div>
   <div class="toolbar${comments.length === 0 ? ' hidden' : ''}">
     <label class="select-all-label">
@@ -171,12 +313,26 @@ export class ReviewPanel {
     </label>
     <button id="apply-btn" disabled>Apply Selected Fixes</button>
     <button id="stage-commit-push-btn" class="hidden">Stage, Commit &amp; Push</button>
+    <div class="group-sort-row">
+      <span class="controls-label">Group:</span>
+      <div class="btn-group">
+        <button class="group-btn secondary active" data-group="none">None</button>
+        <button class="group-btn secondary" data-group="file">By File</button>
+        <button class="group-btn secondary" data-group="type">By Type</button>
+      </div>
+      <span class="controls-label">Sort:</span>
+      <div class="btn-group">
+        <button class="sort-btn secondary active" data-sort="default">Default</button>
+        <button class="sort-btn secondary" data-sort="file">By File</button>
+        <button class="sort-btn secondary" data-sort="complexity">By Complexity</button>
+      </div>
+    </div>
   </div>
   <div class="progress-bar-track" id="progress-track" aria-hidden="true">
     <div class="progress-bar-fill" id="progress-fill"></div>
   </div>
   <div id="git-notice" class="git-notice hidden"></div>
-  <div class="comment-list">
+  <div class="comment-list" id="comment-list">
     ${cardsHtml}
   </div>
   <script nonce="${nonce}" src="${jsUri}"></script>

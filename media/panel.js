@@ -11,10 +11,126 @@
   var doneCount = 0;
   var totalApplying = 0;
 
+  // ─── Grouping / sorting state ────────────────────────────────────────────────
+  var currentGroup = 'none';  // 'none' | 'file' | 'type'
+  var currentSort = 'default'; // 'default' | 'file' | 'complexity'
+  var collapsedGroups = new Set(); // tracks which group keys are collapsed
+
+  var COMPLEXITY_ORDER = { low: 0, medium: 1, high: 2 };
+  var TYPE_LABELS = { 'fix-with-copilot': 'Fix With Copilot', 'commit-suggestion': 'Commit Suggestion' };
+
+  function getAllCards() {
+    return Array.from(document.querySelectorAll('.card[data-number]'));
+  }
+
   function getCheckboxes() {
     return Array.from(document.querySelectorAll('.comment-checkbox'));
   }
 
+  function renderGrouped() {
+    var list = document.getElementById('comment-list');
+    if (!list) { return; }
+
+    var cards = getAllCards();
+
+    // Detach all cards and remove existing group headers
+    cards.forEach(function(c) { list.removeChild(c); });
+    Array.from(list.querySelectorAll('.group-header')).forEach(function(h) { list.removeChild(h); });
+
+    // Sort
+    cards.sort(function(a, b) {
+      if (currentSort === 'file') {
+        var fa = (a.dataset.file || '').toLowerCase();
+        var fb = (b.dataset.file || '').toLowerCase();
+        if (fa < fb) { return -1; }
+        if (fa > fb) { return 1; }
+        return Number(a.dataset.number || 0) - Number(b.dataset.number || 0);
+      }
+      if (currentSort === 'complexity') {
+        var ca = COMPLEXITY_ORDER[a.dataset.complexity] ?? 0;
+        var cb = COMPLEXITY_ORDER[b.dataset.complexity] ?? 0;
+        if (ca !== cb) { return ca - cb; }
+        return Number(a.dataset.number || 0) - Number(b.dataset.number || 0);
+      }
+      // default: original order
+      return Number(a.dataset.number || 0) - Number(b.dataset.number || 0);
+    });
+
+    if (currentGroup === 'none') {
+      cards.forEach(function(c) { list.appendChild(c); });
+      return;
+    }
+
+    // Group cards
+    var groups = {};
+    var groupOrder = [];
+    cards.forEach(function(c) {
+      var key = currentGroup === 'file' ? (c.dataset.file || '') : (c.dataset.type || '');
+      if (!groups[key]) {
+        groups[key] = [];
+        groupOrder.push(key);
+      }
+      groups[key].push(c);
+    });
+
+    groupOrder.forEach(function(key) {
+      var isCollapsed = collapsedGroups.has(key);
+      var header = document.createElement('div');
+      header.className = 'group-header' + (isCollapsed ? ' collapsed' : '');
+      header.dataset.groupKey = key;
+      var label = currentGroup === 'type' ? (TYPE_LABELS[key] || key) : key;
+      var count = groups[key].length;
+      header.innerHTML = '<span class="group-header-chevron">&#9660;</span>'
+        + '<span class="group-header-label">' + escapeHtmlJs(label) + '</span>'
+        + '<span class="group-header-count">' + count + '</span>';
+      header.addEventListener('click', function() {
+        var collapsed = header.classList.toggle('collapsed');
+        if (collapsed) {
+          collapsedGroups.add(key);
+        } else {
+          collapsedGroups.delete(key);
+        }
+        groups[key].forEach(function(c) {
+          c.style.display = collapsed ? 'none' : '';
+        });
+      });
+      list.appendChild(header);
+      groups[key].forEach(function(c) {
+        c.style.display = isCollapsed ? 'none' : '';
+        list.appendChild(c);
+      });
+    });
+  }
+
+  function escapeHtmlJs(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  // ─── Group / sort button wiring ───────────────────────────────────────────────
+  document.querySelectorAll('.group-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('.group-btn').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      currentGroup = btn.dataset.group;
+      renderGrouped();
+    });
+  });
+
+  document.querySelectorAll('.sort-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('.sort-btn').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      currentSort = btn.dataset.sort;
+      renderGrouped();
+    });
+  });
+
+  // ─── Checkbox / apply wiring ─────────────────────────────────────────────────
   function updateApplyButton() {
     const checked = getCheckboxes().filter(function(cb) { return cb.checked && !cb.disabled; });
     const n = checked.length;

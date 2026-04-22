@@ -61,7 +61,18 @@ npx vsce publish
 ```
 Requires a Personal Access Token (PAT) from Azure DevOps with the `Marketplace (Publish)` scope.
 
-### 11.10 — Mark Phase 11 complete in work-plan.md
+### 11.10 — Create release GitHub Actions workflow
+Create `.github/workflows/release.yml` that automates the full release pipeline triggered by a version tag (e.g. `v0.1.0`) or manual `workflow_dispatch`:
+
+1. **verify-version** — checks that the pushed tag matches `package.json`'s `version` field.
+2. **build** — installs dependencies, runs unit tests (`npm run test:unit`), compiles TypeScript, and packages the `.vsix` with `vsce package`.
+3. **publish** — downloads the `.vsix` artifact, then publishes to both the VS Code Marketplace (`vsce publish -p $VSCE_TOKEN`) and Open VSX Registry (`ovsx publish -p $OVSX_TOKEN`).
+
+Required repository secrets:
+- `VSCE_TOKEN` — Azure DevOps PAT with `Marketplace (Publish)` scope.
+- `OVSX_TOKEN` — Open VSX access token (https://open-vsx.org/user-settings/tokens).
+
+### 11.11 — Mark Phase 11 complete in work-plan.md
 Change `## Phase 11 — Packaging & Publishing \`[ ]\`` to `## Phase 11 — Packaging & Publishing \`[x]\`` in `work-plan.md`.
 
 ---
@@ -70,9 +81,10 @@ Change `## Phase 11 — Packaging & Publishing \`[ ]\`` to `## Phase 11 — Pack
 
 - `media/icon.png` (128×128)
 - `package.json` with complete Marketplace metadata
+- `.github/workflows/release.yml` — automated release pipeline (build → test → publish)
 - A `.vsix` file containing only the necessary production artifacts
 - Extension installed and verified end-to-end in a clean VS Code window against the example PR
-- Extension published to the VS Code Marketplace (or ready to publish)
+- Extension published to the VS Code Marketplace and Open VSX Registry (or ready to publish)
 - `work-plan.md` Phase 11 marked `[x]`
 
 ---

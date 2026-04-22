@@ -1,7 +1,7 @@
 {
   "name": "copilot-reviewer-assistant",
   "displayName": "copilot-reviewer-assistant",
-  "description": "Assists in reviewing and applying Copilot PR recommendations",
+  "description": "A VS Code extension that fetches pending Copilot PR review recommendations and lets you review, select, and apply them to your local workspace — all without leaving the editor.",
   "version": "0.0.1",
   "publisher": "Veverke",
   "license": "MIT AND Commons-Clause",
