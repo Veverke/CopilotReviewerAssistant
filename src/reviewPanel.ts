@@ -16,6 +16,7 @@ export class ReviewPanel {
   private _onApplyFixes: ((selectedIds: number[]) => void) | undefined;
   private _onStageCommitAndPush: ((doneResults: DoneFixResult[]) => void) | undefined;
   private _onRetryFix: ((id: number) => void) | undefined;
+  private _onRetryBuild: (() => void) | undefined;
   private _doneResults: DoneFixResult[] = [];
   private _prMeta: PrMetadata = { title: '', assignee: null, filesChangedCount: 0 };
 
@@ -29,6 +30,7 @@ export class ReviewPanel {
       ReviewPanel.currentPanel._onApplyFixes = undefined;
       ReviewPanel.currentPanel._onStageCommitAndPush = undefined;
       ReviewPanel.currentPanel._onRetryFix = undefined;
+      ReviewPanel.currentPanel._onRetryBuild = undefined;
       ReviewPanel.currentPanel._doneResults = [];
       ReviewPanel.currentPanel._panel.webview.html =
         ReviewPanel.currentPanel._getLoadingHtml(ReviewPanel.currentPanel._panel.webview, prUrl);
@@ -50,7 +52,7 @@ export class ReviewPanel {
     ReviewPanel.currentPanel = new ReviewPanel(
       panel, mediaUri, prUrl, null,
       { title: '', assignee: null, filesChangedCount: 0 },
-      undefined, undefined, undefined
+      undefined, undefined, undefined, undefined
     );
     return ReviewPanel.currentPanel;
   }
@@ -62,7 +64,8 @@ export class ReviewPanel {
     prMeta: PrMetadata,
     onApplyFixes: (selectedIds: number[]) => void,
     onStageCommitAndPush: (doneResults: DoneFixResult[]) => void,
-    onRetryFix: (id: number) => void
+    onRetryFix: (id: number) => void,
+    onRetryBuild: () => void
   ): ReviewPanel {
     const column = vscode.window.activeTextEditor
       ? vscode.window.activeTextEditor.viewColumn
@@ -75,6 +78,7 @@ export class ReviewPanel {
       ReviewPanel.currentPanel._onApplyFixes = onApplyFixes;
       ReviewPanel.currentPanel._onStageCommitAndPush = onStageCommitAndPush;
       ReviewPanel.currentPanel._onRetryFix = onRetryFix;
+      ReviewPanel.currentPanel._onRetryBuild = onRetryBuild;
       ReviewPanel.currentPanel._doneResults = [];
       return ReviewPanel.currentPanel;
     }
@@ -92,7 +96,7 @@ export class ReviewPanel {
       }
     );
 
-    ReviewPanel.currentPanel = new ReviewPanel(panel, mediaUri, prUrl, comments, prMeta, onApplyFixes, onStageCommitAndPush, onRetryFix);
+    ReviewPanel.currentPanel = new ReviewPanel(panel, mediaUri, prUrl, comments, prMeta, onApplyFixes, onStageCommitAndPush, onRetryFix, onRetryBuild);
     return ReviewPanel.currentPanel;
   }
 
@@ -104,13 +108,15 @@ export class ReviewPanel {
     prMeta: PrMetadata,
     onApplyFixes: ((selectedIds: number[]) => void) | undefined,
     onStageCommitAndPush: ((doneResults: DoneFixResult[]) => void) | undefined,
-    onRetryFix: ((id: number) => void) | undefined
+    onRetryFix: ((id: number) => void) | undefined,
+    onRetryBuild: (() => void) | undefined
   ) {
     this._panel = panel;
     this._mediaUri = mediaUri;
     this._onApplyFixes = onApplyFixes;
     this._onStageCommitAndPush = onStageCommitAndPush;
     this._onRetryFix = onRetryFix;
+    this._onRetryBuild = onRetryBuild;
     this._prMeta = prMeta;
 
     if (comments === null) {
@@ -129,6 +135,8 @@ export class ReviewPanel {
           this._onStageCommitAndPush?.(this._doneResults);
         } else if (message.command === 'retryFix' && message.id !== undefined) {
           this._onRetryFix?.(message.id);
+        } else if (message.command === 'retryBuild') {
+          this._onRetryBuild?.();
         }
       },
       null,
@@ -142,12 +150,14 @@ export class ReviewPanel {
     prMeta: PrMetadata,
     onApplyFixes: (selectedIds: number[]) => void,
     onStageCommitAndPush: (doneResults: DoneFixResult[]) => void,
-    onRetryFix: (id: number) => void
+    onRetryFix: (id: number) => void,
+    onRetryBuild: () => void
   ): void {
     this._prMeta = prMeta;
     this._onApplyFixes = onApplyFixes;
     this._onStageCommitAndPush = onStageCommitAndPush;
     this._onRetryFix = onRetryFix;
+    this._onRetryBuild = onRetryBuild;
     this._doneResults = [];
     this._update(prUrl, comments);
   }
@@ -328,8 +338,13 @@ export class ReviewPanel {
       </div>
     </div>
   </div>
-  <div class="progress-bar-track" id="progress-track" aria-hidden="true">
-    <div class="progress-bar-fill" id="progress-fill"></div>
+  <div id="apply-progress" class="apply-progress hidden" role="status" aria-live="polite">
+    <div class="apply-progress-text" id="apply-progress-text">
+      <span class="apply-progress-spinner" id="apply-progress-spinner" aria-hidden="true"></span>
+    </div>
+    <div class="apply-progress-bar-track">
+      <div class="apply-progress-bar-fill" id="apply-progress-fill"></div>
+    </div>
   </div>
   <div id="git-notice" class="git-notice hidden"></div>
   <div class="comment-list" id="comment-list">
@@ -350,6 +365,10 @@ export class ReviewPanel {
       });
     }
     void this._panel.webview.postMessage({ command: 'fixStatus', status });
+  }
+
+  public postApplyProgress(current: number, total: number): void {
+    void this._panel.webview.postMessage({ command: 'applyProgress', current, total });
   }
 
   public postBanner(message: string, type: 'info' | 'warning' = 'info'): void {

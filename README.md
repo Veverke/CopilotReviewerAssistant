@@ -50,7 +50,7 @@ This extension does not contribute any user-configurable settings.
 
 ## Release Notes
 
-### 0.0.1
+### 1.0.0
 
 Initial release — full pipeline from PR URL input through Copilot comment fetch, AI work plan generation, Webview checklist, fix application, and Git commit.
 

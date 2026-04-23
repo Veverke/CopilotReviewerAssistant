@@ -7,7 +7,8 @@
  *    - trims whitespace from the assembled text
  *    - falls back when no model is available (empty list)
  *    - falls back when selectChatModels throws
- *    - tries gpt-4o first; falls back to any copilot model
+ *    - shows QuickPick and uses chosen model when multiple are available
+ *    - returns fallback when QuickPick is dismissed
  *    - returns error message when sendRequest throws
  *    - returns error message when the text stream throws mid-stream
  *
@@ -22,11 +23,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('vscode', () => ({
   lm: { selectChatModels: vi.fn() },
+  window: { showQuickPick: vi.fn() },
   LanguageModelChatMessage: { User: vi.fn((content: string) => ({ role: 'user', content })) },
 }));
 
+vi.mock('../../modelSelector', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../modelSelector')>();
+  return actual; // use real implementation so we can test through it
+});
+
 import * as vscode from 'vscode';
 import { generateWorkPlan, generateAllWorkPlans } from '../../workPlanGenerator';
+import { clearModelCache } from '../../modelSelector';
 import type { ReviewComment } from '../../githubApi';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -59,7 +67,10 @@ function makeModel(chunks: string[]): vscode.LanguageModelChat {
 // ─── generateWorkPlan ─────────────────────────────────────────────────────────
 
 describe('generateWorkPlan', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearModelCache();
+  });
 
   it('assembles and returns streaming chunks as work plan text', async () => {
     vi.mocked(vscode.lm.selectChatModels).mockResolvedValue([
@@ -95,20 +106,28 @@ describe('generateWorkPlan', () => {
     expect(result).toBe('No language model available. Work plan could not be generated.');
   });
 
-  it('tries gpt-4o first, then any copilot model as fallback', async () => {
-    vi.mocked(vscode.lm.selectChatModels)
-      .mockResolvedValueOnce([] as any)       // gpt-4o not available
-      .mockResolvedValueOnce([makeModel(['1. step'])] as any); // fallback
+  it('shows QuickPick and uses the chosen model when multiple are available', async () => {
+    const model1 = { ...makeModel(['ignored']), name: 'GPT-4o', vendor: 'copilot', family: 'gpt-4o' };
+    const model2 = { ...makeModel(['1. step']), name: 'Claude Sonnet', vendor: 'copilot', family: 'claude-sonnet' };
+    vi.mocked(vscode.lm.selectChatModels).mockResolvedValue([model1, model2] as any);
+    vi.mocked(vscode.window.showQuickPick).mockResolvedValue({ label: 'Claude Sonnet', model: model2 } as any);
 
     const result = await generateWorkPlan(makeComment());
 
     expect(result).toBe('1. step');
-    expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(2);
-    expect(vscode.lm.selectChatModels).toHaveBeenNthCalledWith(
-      1,
-      { vendor: 'copilot', family: 'gpt-4o' }
-    );
-    expect(vscode.lm.selectChatModels).toHaveBeenNthCalledWith(2, { vendor: 'copilot' });
+    expect(vscode.lm.selectChatModels).toHaveBeenCalledWith({});
+    expect(vscode.window.showQuickPick).toHaveBeenCalledOnce();
+  });
+
+  it('returns the fallback message when QuickPick is dismissed', async () => {
+    const model1 = { ...makeModel(['ignored']), name: 'GPT-4o', vendor: 'copilot', family: 'gpt-4o' };
+    const model2 = { ...makeModel(['ignored']), name: 'Claude Sonnet', vendor: 'copilot', family: 'claude-sonnet' };
+    vi.mocked(vscode.lm.selectChatModels).mockResolvedValue([model1, model2] as any);
+    vi.mocked(vscode.window.showQuickPick).mockResolvedValue(undefined as any);
+
+    const result = await generateWorkPlan(makeComment());
+
+    expect(result).toBe('No language model available. Work plan could not be generated.');
   });
 
   it('returns an error message when sendRequest throws', async () => {
@@ -158,7 +177,10 @@ describe('generateWorkPlan', () => {
 // ─── generateAllWorkPlans ─────────────────────────────────────────────────────
 
 describe('generateAllWorkPlans', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearModelCache();
+  });
 
   it('returns an AnnotatedComment for every input comment', async () => {
     vi.mocked(vscode.lm.selectChatModels).mockResolvedValue([

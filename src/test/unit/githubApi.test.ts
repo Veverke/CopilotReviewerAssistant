@@ -41,6 +41,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   fetchCopilotComments,
+  fetchOpenPullRequests,
   fetchPrState,
   postReplyComment,
   resolveReviewThread,
@@ -440,6 +441,61 @@ describe('resolveReviewThread', () => {
       .mockRejectedValueOnce(new Error('network error'));
     await expect(resolveReviewThread('tok', 'o', 'r', 1, 5)).rejects.toThrow(
       'Network error resolving review thread'
+    );
+  });
+});
+
+// ─── fetchOpenPullRequests ────────────────────────────────────────────────────
+
+describe('fetchOpenPullRequests', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  function makePrItem(n: number) {
+    return { number: n, title: `PR ${n}`, html_url: `https://github.com/o/r/pull/${n}` };
+  }
+
+  it('returns mapped OpenPr objects for a successful response', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([makePrItem(1), makePrItem(2)]));
+    const prs = await fetchOpenPullRequests('tok', 'o', 'r');
+    expect(prs).toHaveLength(2);
+    expect(prs[0]).toEqual({ pullNumber: 1, title: 'PR 1', htmlUrl: 'https://github.com/o/r/pull/1' });
+    expect(prs[1]).toEqual({ pullNumber: 2, title: 'PR 2', htmlUrl: 'https://github.com/o/r/pull/2' });
+  });
+
+  it('returns an empty array for an empty list', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([]));
+    const prs = await fetchOpenPullRequests('tok', 'o', 'r');
+    expect(prs).toEqual([]);
+  });
+
+  it('returns an empty array on a non-ok HTTP response', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse({}, 403));
+    const prs = await fetchOpenPullRequests('tok', 'o', 'r');
+    expect(prs).toEqual([]);
+  });
+
+  it('returns an empty array on a network error', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetch)
+        .mockRejectedValueOnce(new Error('network error'))
+        .mockRejectedValueOnce(new Error('still down'));
+      const resultPromise = fetchOpenPullRequests('tok', 'o', 'r');
+      await vi.advanceTimersByTimeAsync(1100);
+      const prs = await resultPromise;
+      expect(prs).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('requests the open PRs endpoint with the correct URL', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([]));
+    await fetchOpenPullRequests('tok', 'owner', 'repo');
+    expect(fetch).toHaveBeenCalledWith(
+      'https://api.github.com/repos/owner/repo/pulls?state=open&per_page=100',
+      expect.anything()
     );
   });
 });

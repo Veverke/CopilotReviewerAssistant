@@ -64,3 +64,12 @@ export const env = {
 export const ViewColumn = {
   One: 1,
 };
+
+export class CancellationTokenSource {
+  token = {
+    isCancellationRequested: false,
+    onCancellationRequested: vi.fn(),
+  };
+  cancel() { this.token.isCancellationRequested = true; }
+  dispose() {}
+}

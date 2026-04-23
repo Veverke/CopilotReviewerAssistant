@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ReviewComment } from './githubApi';
+import { selectModel } from './modelSelector';
 
 export type ComplexityScore = 'low' | 'medium' | 'high';
 
@@ -58,14 +59,6 @@ function inferComplexityHeuristic(workPlan: string, comment: ReviewComment): Com
   if (steps <= 2) { return 'low'; }
   if (steps <= 4) { return 'medium'; }
   return 'high';
-}
-
-async function selectModel(): Promise<vscode.LanguageModelChat | undefined> {
-  let models = await vscode.lm.selectChatModels({ vendor: 'copilot', family: 'gpt-4o' });
-  if (models.length === 0) {
-    models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
-  }
-  return models[0];
 }
 
 export async function generateWorkPlan(comment: ReviewComment): Promise<string> {

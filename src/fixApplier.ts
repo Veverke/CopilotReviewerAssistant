@@ -1,8 +1,10 @@
 import * as vscode from 'vscode';
 import { AnnotatedComment } from './workPlanGenerator';
+import { selectModel } from './modelSelector';
 
 export type FixStatus =
   | { id: number; state: 'applying' }
+  | { id: number; state: 'thinking'; text: string }
   | { id: number; state: 'done'; filePath: string; startLine: number; endLine: number }
   | { id: number; state: 'failed'; reason: string };
 
@@ -56,7 +58,9 @@ function buildFixPrompt(
   line: number,
   body: string,
   diffHunk: string,
-  fileContent: string
+  contextSection: string,
+  sectionStartLine: number,
+  sectionEndLine: number
 ): string {
   return [
     'You are a code fix assistant. Apply the following code review recommendation to the file.',
@@ -70,51 +74,58 @@ function buildFixPrompt(
     'Diff hunk (context around the target line):',
     diffHunk,
     '',
-    'Current file content:',
-    fileContent,
+    `Relevant file section (lines ${sectionStartLine}\u2013${sectionEndLine}):`,
+    contextSection,
     '',
-    'Return the complete corrected file content only. Do not add explanations, markdown code fences, or any text outside the file content.',
+    `Return the complete corrected version of lines ${sectionStartLine}\u2013${sectionEndLine} only. Do not add explanations, markdown code fences, or any text outside the section content.`,
   ].join('\n');
 }
 
-async function selectModel(): Promise<vscode.LanguageModelChat | undefined> {
-  let models = await vscode.lm.selectChatModels({ vendor: 'copilot', family: 'gpt-4o' });
-  if (models.length === 0) {
-    models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
-  }
-  return models[0];
-}
+const LM_TIMEOUT_MS = 90_000;
+const CONTEXT_LINES = 100;
 
-const LM_TIMEOUT_MS = 30_000;
+function extractFileContext(
+  fileContent: string,
+  targetLine: number
+): { contextSection: string; sectionStart: number; sectionEnd: number } {
+  const lines = fileContent.split('\n');
+  const zeroIndexed = Math.max(0, targetLine - 1);
+  const sectionStart = Math.max(0, zeroIndexed - CONTEXT_LINES);
+  const sectionEnd = Math.min(lines.length, zeroIndexed + CONTEXT_LINES + 1);
+  return {
+    contextSection: lines.slice(sectionStart, sectionEnd).join('\n'),
+    sectionStart,
+    sectionEnd,
+  };
+}
 
 async function callLmWithTimeout(
   model: vscode.LanguageModelChat,
-  messages: vscode.LanguageModelChatMessage[]
+  messages: vscode.LanguageModelChatMessage[],
+  onChunk?: (chunk: string) => void
 ): Promise<string> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error('Language model timed out after 30 seconds')),
-      LM_TIMEOUT_MS
-    );
-  });
-
-  const lmPromise = (async () => {
-    try {
-      const response = await model.sendRequest(messages, {});
-      const parts: string[] = [];
-      for await (const chunk of response.text) {
-        parts.push(chunk);
-      }
-      return parts.join('').trim();
-    } finally {
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
+  // Use a CancellationToken so the LM stream is truly terminated on timeout.
+  // A bare Promise.race leaves the for-await loop running in the background,
+  // keeping the LM API busy and causing every subsequent call to time out too.
+  const cts = new vscode.CancellationTokenSource();
+  const timeoutId = setTimeout(() => cts.cancel(), LM_TIMEOUT_MS);
+  try {
+    const response = await model.sendRequest(messages, {}, cts.token);
+    const parts: string[] = [];
+    for await (const chunk of response.text) {
+      parts.push(chunk);
+      onChunk?.(chunk);
     }
-  })();
-
-  return Promise.race([lmPromise, timeoutPromise]);
+    return parts.join('').trim();
+  } catch (err: unknown) {
+    if (cts.token.isCancellationRequested) {
+      throw new Error('Language model timed out after 90 seconds');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+    cts.dispose();
+  }
 }
 
 export async function applyFix(
@@ -154,31 +165,48 @@ export async function applyFix(
     return;
   }
 
-  const prompt = buildFixPrompt(comment.path, comment.line, comment.body, comment.diffHunk, fileContent);
+  const { contextSection, sectionStart, sectionEnd } = extractFileContext(fileContent, comment.line);
+  const prompt = buildFixPrompt(
+    comment.path,
+    comment.line,
+    comment.body,
+    comment.diffHunk,
+    contextSection,
+    sectionStart + 1,
+    sectionEnd
+  );
   const messages = [vscode.LanguageModelChatMessage.User(prompt)];
 
-  let corrected: string;
+  let correctedSection: string;
   try {
-    corrected = await callLmWithTimeout(model, messages);
+    correctedSection = await callLmWithTimeout(model, messages);
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
     onProgress({ id: comment.id, state: 'failed', reason });
     return;
   }
 
-  if (!corrected) {
+  if (!correctedSection) {
     onProgress({ id: comment.id, state: 'failed', reason: 'Language model returned empty content' });
     return;
   }
 
+  const fileLines = fileContent.split('\n');
+  const correctedLines = correctedSection.split('\n');
+  const newContent = [
+    ...fileLines.slice(0, sectionStart),
+    ...correctedLines,
+    ...fileLines.slice(sectionEnd),
+  ].join('\n');
+
   try {
-    await vscode.workspace.fs.writeFile(uri, Buffer.from(corrected, 'utf8'));
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(newContent, 'utf8'));
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
     onProgress({ id: comment.id, state: 'failed', reason });
     return;
   }
 
-  const { startLine, endLine } = computeChangedLineRange(fileContent, corrected, comment.line);
+  const { startLine, endLine } = computeChangedLineRange(fileContent, newContent, comment.line);
   onProgress({ id: comment.id, state: 'done', filePath: comment.path, startLine, endLine });
 }

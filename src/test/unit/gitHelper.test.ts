@@ -25,14 +25,18 @@ vi.mock('vscode', () => ({
   Uri: { joinPath: vi.fn() },
 }));
 
+vi.mock('fs');
+
 import * as vscode from 'vscode';
-import { stageFiles, commitChanges, pushChanges } from '../../gitHelper';
+import * as fs from 'fs';
+import { stageFiles, commitChanges, pushChanges, getRemoteOwnerRepo, detectBuildCommand } from '../../gitHelper';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function makeRepo(rootFsPath = '/workspace') {
+function makeRepo(rootFsPath = '/workspace', remotes: { name: string; fetchUrl?: string; pushUrl?: string }[] = []) {
   return {
     rootUri: { fsPath: rootFsPath },
+    state: { remotes },
     add: vi.fn().mockResolvedValue(undefined),
     commit: vi.fn().mockResolvedValue(undefined),
     push: vi.fn().mockResolvedValue(undefined),
@@ -176,5 +180,162 @@ describe('pushChanges', () => {
     vi.mocked(vscode.extensions.getExtension).mockReturnValue(undefined as any);
 
     await expect(pushChanges()).rejects.toThrow('Git repository not found');
+  });
+});
+
+// ─── getRemoteOwnerRepo ───────────────────────────────────────────────────────
+
+describe('getRemoteOwnerRepo', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (vscode.workspace as any).workspaceFolders = undefined;
+  });
+
+  it('returns owner and repo parsed from an HTTPS origin remote', async () => {
+    const repo = makeRepo('/ws', [{ name: 'origin', fetchUrl: 'https://github.com/acme/my-project.git' }]);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(makeGitExtension([repo]) as any);
+
+    const result = await getRemoteOwnerRepo();
+    expect(result).toEqual({ owner: 'acme', repo: 'my-project' });
+  });
+
+  it('returns owner and repo parsed from an SSH origin remote', async () => {
+    const repo = makeRepo('/ws', [{ name: 'origin', fetchUrl: 'git@github.com:org/repo-name.git' }]);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(makeGitExtension([repo]) as any);
+
+    const result = await getRemoteOwnerRepo();
+    expect(result).toEqual({ owner: 'org', repo: 'repo-name' });
+  });
+
+  it('falls back to pushUrl when fetchUrl is undefined', async () => {
+    const repo = makeRepo('/ws', [{ name: 'origin', pushUrl: 'https://github.com/owner/repo.git' }]);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(makeGitExtension([repo]) as any);
+
+    const result = await getRemoteOwnerRepo();
+    expect(result).toEqual({ owner: 'owner', repo: 'repo' });
+  });
+
+  it('uses the first remote when there is no "origin"', async () => {
+    const repo = makeRepo('/ws', [{ name: 'upstream', fetchUrl: 'https://github.com/upstream-owner/upstream-repo.git' }]);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(makeGitExtension([repo]) as any);
+
+    const result = await getRemoteOwnerRepo();
+    expect(result).toEqual({ owner: 'upstream-owner', repo: 'upstream-repo' });
+  });
+
+  it('returns undefined when there are no remotes', async () => {
+    const repo = makeRepo('/ws', []);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(makeGitExtension([repo]) as any);
+
+    const result = await getRemoteOwnerRepo();
+    expect(result).toBeUndefined();
+  });
+
+  it('returns undefined when the remote URL is not a GitHub URL', async () => {
+    const repo = makeRepo('/ws', [{ name: 'origin', fetchUrl: 'https://gitlab.com/owner/repo.git' }]);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(makeGitExtension([repo]) as any);
+
+    const result = await getRemoteOwnerRepo();
+    expect(result).toBeUndefined();
+  });
+
+  it('returns undefined when the git extension is missing', async () => {
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(undefined as any);
+
+    const result = await getRemoteOwnerRepo();
+    expect(result).toBeUndefined();
+  });
+});
+
+// ─── detectBuildCommand ───────────────────────────────────────────────────────
+
+describe('detectBuildCommand', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function mockFs({
+    existsMap = {} as Record<string, boolean>,
+    pkgJson = undefined as Record<string, unknown> | undefined,
+    dirEntries = [] as string[],
+  }) {
+    // Normalize to forward slashes so tests work on both Windows and Unix
+    vi.mocked(fs.existsSync).mockImplementation((p) => {
+      const key = (p as string).replace(/\\/g, '/');
+      return existsMap[key] ?? false;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation(() => {
+      if (pkgJson) { return JSON.stringify(pkgJson); }
+      throw new Error('not found');
+    });
+    vi.mocked(fs.readdirSync).mockReturnValue(dirEntries as any);
+  }
+
+  it('returns npm run build when package.json has a build script', () => {
+    mockFs({
+      existsMap: { '/ws/package.json': true },
+      pkgJson: { scripts: { build: 'tsc' } },
+    });
+    expect(detectBuildCommand('/ws')).toBe('npm run build');
+  });
+
+  it('prefers build over compile in package.json scripts', () => {
+    mockFs({
+      existsMap: { '/ws/package.json': true },
+      pkgJson: { scripts: { build: 'webpack', compile: 'tsc' } },
+    });
+    expect(detectBuildCommand('/ws')).toBe('npm run build');
+  });
+
+  it('returns npm run compile when only compile script exists', () => {
+    mockFs({
+      existsMap: { '/ws/package.json': true },
+      pkgJson: { scripts: { compile: 'tsc' } },
+    });
+    expect(detectBuildCommand('/ws')).toBe('npm run compile');
+  });
+
+  it('falls back to npx tsc --noEmit when tsconfig.json exists but no matching npm script', () => {
+    mockFs({
+      existsMap: { '/ws/package.json': true, '/ws/tsconfig.json': true },
+      pkgJson: { scripts: { test: 'vitest' } },
+    });
+    expect(detectBuildCommand('/ws')).toBe('npx tsc --noEmit');
+  });
+
+  it('returns npx tsc --noEmit when only tsconfig.json exists', () => {
+    mockFs({ existsMap: { '/ws/tsconfig.json': true } });
+    expect(detectBuildCommand('/ws')).toBe('npx tsc --noEmit');
+  });
+
+  it('returns dotnet build for a .sln file', () => {
+    mockFs({ existsMap: {}, dirEntries: ['MyApp.sln'] });
+    expect(detectBuildCommand('/ws')).toBe('dotnet build --nologo -q');
+  });
+
+  it('returns dotnet build for a .csproj file', () => {
+    mockFs({ existsMap: {}, dirEntries: ['MyApp.csproj'] });
+    expect(detectBuildCommand('/ws')).toBe('dotnet build --nologo -q');
+  });
+
+  it('returns cargo check for a Cargo.toml', () => {
+    mockFs({ existsMap: { '/ws/Cargo.toml': true } });
+    expect(detectBuildCommand('/ws')).toBe('cargo check');
+  });
+
+  it('returns mvn compile for a pom.xml', () => {
+    mockFs({ existsMap: { '/ws/pom.xml': true } });
+    expect(detectBuildCommand('/ws')).toBe('mvn compile -q');
+  });
+
+  it('returns undefined when no build system is found', () => {
+    mockFs({ existsMap: {}, dirEntries: ['README.md'] });
+    expect(detectBuildCommand('/ws')).toBeUndefined();
+  });
+
+  it('falls through gracefully when package.json is malformed', () => {
+    vi.mocked(fs.existsSync).mockImplementation((p) => p === '/ws/package.json');
+    vi.mocked(fs.readFileSync).mockReturnValue('not json' as any);
+    vi.mocked(fs.readdirSync).mockReturnValue([] as any);
+    // Should not throw; falls through to return undefined
+    expect(() => detectBuildCommand('/ws')).not.toThrow();
   });
 });

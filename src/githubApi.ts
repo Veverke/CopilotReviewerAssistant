@@ -242,6 +242,49 @@ export async function fetchPrState(
   return { state: data.state, merged: data.merged };
 }
 
+// ─── List open pull requests ───────────────────────────────────────────────────
+
+export interface OpenPr {
+  pullNumber: number;
+  title: string;
+  htmlUrl: string;
+}
+
+interface GitHubPrListItem {
+  number: number;
+  title: string;
+  html_url: string;
+}
+
+export async function fetchOpenPullRequests(
+  token: string,
+  owner: string,
+  repo: string
+): Promise<OpenPr[]> {
+  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=open&per_page=100`;
+  let response: Response;
+  try {
+    response = await fetchWithRetry(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+  } catch {
+    return [];
+  }
+  if (!response.ok) {
+    return [];
+  }
+  const items = await response.json() as GitHubPrListItem[];
+  return items.map((pr) => ({
+    pullNumber: pr.number,
+    title: pr.title,
+    htmlUrl: pr.html_url,
+  }));
+}
+
 // ─── Reply to a PR review comment ─────────────────────────────────────────────
 
 export async function postReplyComment(

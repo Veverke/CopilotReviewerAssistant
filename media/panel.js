@@ -7,8 +7,10 @@
   const selectAllText = document.getElementById('select-all-text');
   const stageCommitPushBtn = document.getElementById('stage-commit-push-btn');
   const gitNotice = document.getElementById('git-notice');
-  const progressFill = document.getElementById('progress-fill');
-  var doneCount = 0;
+  const applyProgress = document.getElementById('apply-progress');
+  const applyProgressText = document.getElementById('apply-progress-text');
+  const applyProgressFill = document.getElementById('apply-progress-fill');
+  var settledCount = 0;  // done + failed
   var totalApplying = 0;
 
   // ─── Grouping / sorting state ────────────────────────────────────────────────
@@ -176,8 +178,9 @@
       .filter((cb) => cb.checked)
       .map((cb) => Number(cb.dataset.id));
     totalApplying = selectedIds.length;
-    doneCount = 0;
-    if (progressFill) { progressFill.style.width = '0%'; }
+    settledCount = 0;
+    updateApplyProgress(0, totalApplying);
+    if (applyProgress) { applyProgress.classList.remove('hidden', 'done'); }
     vscode.postMessage({ command: 'applyFixes', selectedIds: selectedIds });
   });
 
@@ -191,12 +194,43 @@
     const message = event.data;
     if (message.command === 'fixStatus') {
       updateCardStatus(message.status);
+    } else if (message.command === 'applyProgress') {
+      updateApplyProgress(message.current, message.total);
     } else if (message.command === 'gitStatus') {
       updateGitStatus(message.status);
     } else if (message.command === 'banner') {
       showBanner(message.message, message.type);
     }
   });
+
+  function updateApplyProgress(current, total) {
+    if (!applyProgress || !applyProgressText || !applyProgressFill) { return; }
+    if (total === 0) { return; }
+    var pct = Math.round(current / total * 100);
+    applyProgressFill.style.width = pct + '%';
+    var spinner = document.getElementById('apply-progress-spinner');
+    if (current >= total) {
+      applyProgress.classList.add('done');
+      // Update text node, leaving the spinner span in place
+      var textNode = applyProgressText.lastChild;
+      if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+        textNode.textContent = 'All ' + total + ' fixes applied';
+      } else {
+        applyProgressText.appendChild(document.createTextNode('All ' + total + ' fixes applied'));
+      }
+      // brief pause so user sees 100%, then hide
+      setTimeout(function() { applyProgress.classList.add('hidden'); }, 1400);
+    } else {
+      applyProgress.classList.remove('done');
+      var label = 'Applying fixes: ' + current + ' / ' + total + ' done';
+      var textNode2 = applyProgressText.lastChild;
+      if (textNode2 && textNode2.nodeType === Node.TEXT_NODE) {
+        textNode2.textContent = label;
+      } else {
+        applyProgressText.appendChild(document.createTextNode(label));
+      }
+    }
+  }
 
   function showBanner(message, type) {
     var bannerArea = document.getElementById('banner-area');
@@ -208,7 +242,21 @@
   }
 
   function updateGitStatus(status) {
-    if (status.state === 'pushing') {
+    if (status.state === 'building') {
+      stageCommitPushBtn.disabled = true;
+      stageCommitPushBtn.textContent = 'Building\u2026';
+      gitNotice.classList.add('hidden');
+      gitNotice.textContent = '';
+    } else if (status.state === 'build-failed') {
+      stageCommitPushBtn.disabled = false;
+      stageCommitPushBtn.textContent = 'Stage, Commit \u0026 Push';
+      showBuildFailedNotice(status.reason);
+    } else if (status.state === 'build-succeeded') {
+      stageCommitPushBtn.disabled = true;
+      stageCommitPushBtn.textContent = 'Build succeeded \u2713';
+      gitNotice.classList.add('hidden');
+      gitNotice.textContent = '';
+    } else if (status.state === 'pushing') {
       stageCommitPushBtn.disabled = true;
       stageCommitPushBtn.textContent = 'Pushing\u2026';
       gitNotice.classList.add('hidden');
@@ -223,6 +271,32 @@
       stageCommitPushBtn.classList.add('hidden');
       showGitNotice('Git repository not found. Please stage and commit manually.', 'git-notice-error');
     }
+  }
+
+  function showBuildFailedNotice(reason) {
+    gitNotice.innerHTML = '';
+    gitNotice.className = 'git-notice git-notice-error';
+
+    var header = document.createElement('div');
+    header.className = 'git-notice-header';
+    header.textContent = '\u26a0\ufe0f Build failed \u2014 fix the errors below, then click Retry Build.';
+    gitNotice.appendChild(header);
+
+    var pre = document.createElement('pre');
+    pre.className = 'git-notice-pre';
+    pre.textContent = reason;
+    gitNotice.appendChild(pre);
+
+    var retryBtn = document.createElement('button');
+    retryBtn.className = 'secondary';
+    retryBtn.textContent = 'Retry Build';
+    retryBtn.addEventListener('click', function () {
+      retryBtn.disabled = true;
+      retryBtn.textContent = 'Building\u2026';
+      vscode.postMessage({ command: 'retryBuild' });
+    });
+    gitNotice.appendChild(retryBtn);
+    gitNotice.classList.remove('hidden');
   }
 
   function showGitNotice(message, cls) {
@@ -243,12 +317,29 @@
       card.querySelector('.card-body').appendChild(statusEl);
     }
 
+    if (status.state === 'thinking') {
+      var streamEl = card.querySelector('.fix-stream');
+      if (!streamEl) {
+        streamEl = document.createElement('pre');
+        streamEl.className = 'fix-stream';
+        card.appendChild(streamEl);
+      }
+      streamEl.textContent += status.text;
+      streamEl.scrollTop = streamEl.scrollHeight;
+      return;
+    }
+
+    // Keep stream visible but dim it once settled
+    var existingStream = card.querySelector('.fix-stream');
+    if (existingStream) { existingStream.classList.add('fix-stream-settled'); }
+
     statusEl.className = 'fix-status';
     card.classList.remove('state-applying', 'state-done', 'state-failed');
     if (status.state === 'applying') {
       card.classList.add('state-applying');
       statusEl.classList.add('fix-applying');
       statusEl.textContent = '';
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     } else if (status.state === 'done') {
       card.classList.add('state-done');
       statusEl.classList.add('fix-done');
@@ -257,10 +348,8 @@
       checkbox.checked = false;
       checkbox.disabled = true;
       updateApplyButton();
-      doneCount++;
-      if (progressFill && totalApplying > 0) {
-        progressFill.style.width = (doneCount / totalApplying * 100) + '%';
-      }
+      settledCount++;
+      updateApplyProgress(settledCount, totalApplying);
     } else if (status.state === 'failed') {
       card.classList.add('state-failed');
       statusEl.className = 'fix-status fix-failed';
@@ -277,6 +366,8 @@
         vscode.postMessage({ command: 'retryFix', id: status.id });
       });
       statusEl.appendChild(retryBtn);
+      settledCount++;
+      updateApplyProgress(settledCount, totalApplying);
     }
   }
 

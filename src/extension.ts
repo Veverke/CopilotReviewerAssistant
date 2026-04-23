@@ -2,13 +2,13 @@
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 import { getGitHubToken } from './auth';
-import { promptForPrUrl, parsePrUrl } from './prInput';
-import { fetchCopilotComments, fetchPrState, fetchPrMetadata, postReplyComment, resolveReviewThread } from './githubApi';
+import { pickFromOpenPrs } from './prInput';
+import { fetchCopilotComments, fetchOpenPullRequests, fetchPrState, fetchPrMetadata, postReplyComment, resolveReviewThread } from './githubApi';
 import type { PrMetadata } from './githubApi';
 import { generateAllWorkPlans } from './workPlanGenerator';
 import { ReviewPanel } from './reviewPanel';
-import { applyFix, resolveWorkspaceFile } from './fixApplier';
-import { stageFiles, commitChanges, pushChanges } from './gitHelper';
+import { applyFix, resolveWorkspaceFile, DoneFixResult } from './fixApplier';
+import { stageFiles, commitChanges, pushChanges, getRemoteOwnerRepo, buildProject } from './gitHelper';
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
@@ -30,19 +30,28 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		const rawUrl = await promptForPrUrl();
-		if (rawUrl === undefined) {
+		const repoCoords = await getRemoteOwnerRepo();
+		if (!repoCoords) {
+			vscode.window.showErrorMessage(
+				'Could not detect a GitHub repository from this workspace. ' +
+				'Ensure the folder is a git repository with a GitHub remote named "origin".',
+			);
 			return;
 		}
 
-		let prCoordinates;
+		let openPrs: import('./githubApi').OpenPr[] = [];
 		try {
-			prCoordinates = parsePrUrl(rawUrl);
-		} catch (err: unknown) {
-			const message = err instanceof Error ? err.message : 'An unknown error occurred while parsing the PR URL.';
-			vscode.window.showErrorMessage(message);
+			openPrs = await fetchOpenPullRequests(token, repoCoords.owner, repoCoords.repo);
+		} catch {
+			openPrs = [];
+		}
+
+		const prCoordinates = await pickFromOpenPrs(openPrs, repoCoords.owner, repoCoords.repo);
+		if (!prCoordinates) {
 			return;
 		}
+
+		const rawUrl = `https://github.com/${prCoordinates.owner}/${prCoordinates.repo}/pull/${prCoordinates.pullNumber}`;
 
 		// Open the panel immediately with a loading skeleton
 		const panel = ReviewPanel.showLoading(context, rawUrl);
@@ -95,73 +104,126 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
+		// Stores doneResults so the retry-build callback can re-use them
+		let pendingDoneResults: DoneFixResult[] | undefined;
+
+		// Stage + commit + push (called after a successful build)
+		async function commitAndPush(doneResults: DoneFixResult[]): Promise<void> {
+			const { owner, repo, pullNumber } = prCoordinates!;
+			const uniquePaths = [...new Set(doneResults.map((r) => r.commentPath))];
+
+			panel.postGitStatus({ state: 'pushing' });
+
+			try {
+				await stageFiles(uniquePaths);
+				await commitChanges(uniquePaths, doneResults.length);
+			} catch (err: unknown) {
+				const reason = err instanceof Error ? err.message : String(err);
+				if (reason === 'Git repository not found') {
+					panel.postGitStatus({ state: 'no-repo' });
+				} else {
+					panel.postGitStatus({ state: 'push-failed', reason });
+				}
+				return;
+			}
+
+			let pushSucceeded = true;
+			try {
+				await pushChanges();
+			} catch (err: unknown) {
+				pushSucceeded = false;
+				const reason = err instanceof Error ? err.message : String(err);
+				panel.postGitStatus({
+					state: 'push-failed',
+					reason: `Commit created locally but push failed: ${reason}. Please push manually.`,
+				});
+			}
+
+			for (const result of doneResults) {
+				const body = buildReplyBody(result.commentPath, result.startLine, result.endLine);
+				try {
+					await postReplyComment(token, owner, repo, pullNumber, result.commentId, body);
+				} catch (err: unknown) {
+					outputChannel.appendLine(`[gitIntegration] Failed to post reply for comment ${result.commentId}: ${err instanceof Error ? err.message : String(err)}`);
+				}
+				try {
+					await resolveReviewThread(token, owner, repo, pullNumber, result.commentId);
+				} catch (err: unknown) {
+					outputChannel.appendLine(`[gitIntegration] Failed to resolve thread for comment ${result.commentId}: ${err instanceof Error ? err.message : String(err)}`);
+				}
+			}
+
+			if (pushSucceeded) {
+				panel.postGitStatus({ state: 'pushed' });
+				vscode.window.showInformationMessage('Changes committed and pushed successfully.');
+			}
+		}
+
+		// Build then commit: run build first; on failure expose retry button; on success commit
+		async function buildThenCommit(doneResults: DoneFixResult[]): Promise<void> {
+			pendingDoneResults = doneResults;
+			panel.postGitStatus({ state: 'building' });
+			const buildResult = await buildProject();
+			if (!buildResult.ok) {
+				panel.postGitStatus({ state: 'build-failed', reason: buildResult.reason });
+				return;
+			}
+			if (buildResult.skipped && buildResult.reason) {
+				panel.postBanner(`Build check skipped: ${buildResult.reason}`, 'warning');
+			}
+			panel.postGitStatus({ state: 'build-succeeded' });
+			await commitAndPush(doneResults);
+		}
+
 		panel.setContent(rawUrl, annotated!, prMeta!, (selectedIds) => {
 			const selected = annotated!.filter((a) => selectedIds.includes(a.comment.id));
 			void (async () => {
-				for (const item of selected) {
-					await applyFix(item, (status) => {
+				const total = selected.length;
+				let settled = 0;
+				panel.postApplyProgress(settled, total);
+
+				// Apply fixes sequentially — the VS Code LM API processes one request
+				// at a time; parallel calls cause all-but-one to hit the timeout.
+				// A short settling delay between requests lets the LM API fully
+				// close the previous stream before the next one begins.
+				for (let i = 0; i < selected.length; i++) {
+					if (i > 0) {
+						await new Promise<void>((resolve) => setTimeout(resolve, 5000));
+					}
+					await applyFix(selected[i], (status) => {
 						panel.postFixStatus(status);
+						if (status.state === 'done' || status.state === 'failed') {
+							settled++;
+							panel.postApplyProgress(settled, total);
+						}
 					});
 				}
 			})();
 		}, (doneResults) => {
-			void (async () => {
-				const { owner, repo, pullNumber } = prCoordinates;
-				const uniquePaths = [...new Set(doneResults.map((r) => r.commentPath))];
-
-				panel.postGitStatus({ state: 'pushing' });
-
-				try {
-					await stageFiles(uniquePaths);
-					await commitChanges(uniquePaths, doneResults.length);
-				} catch (err: unknown) {
-					const reason = err instanceof Error ? err.message : String(err);
-					if (reason === 'Git repository not found') {
-						panel.postGitStatus({ state: 'no-repo' });
-					} else {
-						panel.postGitStatus({ state: 'push-failed', reason });
-					}
-					return;
-				}
-
-				let pushSucceeded = true;
-				try {
-					await pushChanges();
-				} catch (err: unknown) {
-					pushSucceeded = false;
-					const reason = err instanceof Error ? err.message : String(err);
-					panel.postGitStatus({
-						state: 'push-failed',
-						reason: `Commit created locally but push failed: ${reason}. Please push manually.`,
-					});
-				}
-
-				for (const result of doneResults) {
-					const body = buildReplyBody(result.commentPath, result.startLine, result.endLine);
-					try {
-						await postReplyComment(token, owner, repo, pullNumber, result.commentId, body);
-					} catch (err: unknown) {
-						outputChannel.appendLine(`[gitIntegration] Failed to post reply for comment ${result.commentId}: ${err instanceof Error ? err.message : String(err)}`);
-					}
-					try {
-						await resolveReviewThread(token, owner, repo, pullNumber, result.commentId);
-					} catch (err: unknown) {
-						outputChannel.appendLine(`[gitIntegration] Failed to resolve thread for comment ${result.commentId}: ${err instanceof Error ? err.message : String(err)}`);
-					}
-				}
-
-				if (pushSucceeded) {
-					panel.postGitStatus({ state: 'pushed' });
-					vscode.window.showInformationMessage('Changes committed and pushed successfully.');
-				}
-			})();
+			void buildThenCommit(doneResults);
 		}, (id) => {
 			const item = annotated!.find((a) => a.comment.id === id);
 			if (item) {
+				panel.postApplyProgress(0, 1);
 				void applyFix(item, (status) => {
 					panel.postFixStatus(status);
+					if (status.state === 'done' || status.state === 'failed') {
+						panel.postApplyProgress(1, 1);
+					}
 				});
 			}
+		}, () => {
+			// onRetryBuild — re-run build, then proceed if it passes
+			void (async () => {
+				panel.postGitStatus({ state: 'building' });
+				const buildResult = await buildProject();
+				if (!buildResult.ok) {
+					panel.postGitStatus({ state: 'build-failed', reason: buildResult.reason });
+					return;
+				}
+				panel.postGitStatus({ state: 'build-succeeded' });
+				await commitAndPush(pendingDoneResults!);
+			})();
 		});
 
 		const { outdatedCount } = fetchResult!;

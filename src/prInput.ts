@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import type { OpenPr } from './githubApi';
 
 export interface PrCoordinates {
   owner: string;
@@ -27,4 +28,36 @@ export function parsePrUrl(url: string): PrCoordinates {
     throw new Error(`Invalid GitHub PR URL: "${url}". Expected format: https://github.com/owner/repo/pull/123`);
   }
   return { owner: match[1], repo: match[2], pullNumber: parseInt(match[3], 10) };
+}
+
+export async function pickFromOpenPrs(
+  prs: OpenPr[],
+  owner: string,
+  repo: string
+): Promise<PrCoordinates | undefined> {
+  if (prs.length === 0) {
+    // No open PRs found — fall back to manual URL entry
+    const rawUrl = await promptForPrUrl();
+    if (rawUrl === undefined) {
+      return undefined;
+    }
+    return parsePrUrl(rawUrl);
+  }
+
+  const items = prs.map((pr) => ({
+    label: `#${pr.pullNumber} — ${pr.title}`,
+    pullNumber: pr.pullNumber,
+  }));
+
+  const picked = await vscode.window.showQuickPick(items, {
+    title: 'Copilot Reviewer Assistant — Select a Pull Request',
+    placeHolder: 'Select an open PR to load Copilot review recommendations',
+    ignoreFocusOut: true,
+  });
+
+  if (!picked) {
+    return undefined;
+  }
+
+  return { owner, repo, pullNumber: picked.pullNumber };
 }

@@ -1,10 +1,14 @@
 {
   "name": "copilot-reviewer-assistant",
-  "displayName": "copilot-reviewer-assistant",
+  "displayName": "Copilot Reviewer Assistant",
   "description": "A VS Code extension that fetches pending Copilot PR review recommendations and lets you review, select, and apply them to your local workspace — all without leaving the editor.",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "publisher": "Veverke",
   "license": "MIT AND Commons-Clause",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Veverke/CopilotReviewerAssistant"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -17,7 +21,7 @@
     "commands": [
       {
         "command": "copilotReviewer.openPanel",
-        "title": "Copilot Reviewer: Open PR Fix Panel"
+        "title": "Copilot Reviewer: Open PR Copilot Reviews Panel"
       }
     ]
   },

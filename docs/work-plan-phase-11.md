@@ -55,13 +55,7 @@ Verify the full flow works against the example PR:
 ### 11.8 — Create a publisher account on the Marketplace (if not yet done)
 Go to https://marketplace.visualstudio.com/manage and create a publisher matching the `publisher` field in `package.json`.
 
-### 11.9 — Publish to the VS Code Marketplace
-```
-npx vsce publish
-```
-Requires a Personal Access Token (PAT) from Azure DevOps with the `Marketplace (Publish)` scope.
-
-### 11.10 — Create release GitHub Actions workflow
+### 11.9 — Create release GitHub Actions workflow
 Create `.github/workflows/release.yml` that automates the full release pipeline triggered by a version tag (e.g. `v0.1.0`) or manual `workflow_dispatch`:
 
 1. **verify-version** — checks that the pushed tag matches `package.json`'s `version` field.
@@ -72,7 +66,7 @@ Required repository secrets:
 - `VSCE_TOKEN` — Azure DevOps PAT with `Marketplace (Publish)` scope.
 - `OVSX_TOKEN` — Open VSX access token (https://open-vsx.org/user-settings/tokens).
 
-### 11.11 — Mark Phase 11 complete in work-plan.md
+### 11.10 — Mark Phase 11 complete in work-plan.md
 Change `## Phase 11 — Packaging & Publishing \`[ ]\`` to `## Phase 11 — Packaging & Publishing \`[x]\`` in `work-plan.md`.
 
 ---

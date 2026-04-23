@@ -13,14 +13,17 @@
  *    - pullNumber is parsed as an integer
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('vscode', () => ({
   env: { clipboard: { readText: vi.fn() } },
-  window: { showInputBox: vi.fn() },
+  window: { showInputBox: vi.fn(), showQuickPick: vi.fn() },
 }));
 
-import { parsePrUrl } from '../../prInput';
+vi.mock('../../githubApi', () => ({}));
+
+import { parsePrUrl, pickFromOpenPrs } from '../../prInput';
+import type { OpenPr } from '../../githubApi';
 
 describe('parsePrUrl', () => {
   it('parses a standard GitHub PR URL', () => {
@@ -81,5 +84,63 @@ describe('parsePrUrl', () => {
   it('error message includes the invalid URL', () => {
     const bad = 'not-a-pr-url';
     expect(() => parsePrUrl(bad)).toThrow(bad);
+  });
+});
+
+// ─── pickFromOpenPrs ─────────────────────────────────────────────────────────────────
+
+import * as vscode from 'vscode';
+
+describe('pickFromOpenPrs', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function makeOpenPr(n: number): OpenPr {
+    return { pullNumber: n, title: `Fix issue ${n}`, htmlUrl: `https://github.com/owner/repo/pull/${n}` };
+  }
+
+  it('shows a QuickPick with one item per PR', async () => {
+    vi.mocked(vscode.window.showQuickPick).mockResolvedValue(undefined as any);
+    await pickFromOpenPrs([makeOpenPr(1), makeOpenPr(2)], 'owner', 'repo');
+    expect(vscode.window.showQuickPick).toHaveBeenCalledOnce();
+    const items: any[] = vi.mocked(vscode.window.showQuickPick).mock.calls[0][0] as any[];
+    expect(items).toHaveLength(2);
+  });
+
+  it('returns PrCoordinates for the selected PR', async () => {
+    vi.mocked(vscode.window.showQuickPick).mockResolvedValue(
+      { label: '#7 — Fix issue 7', pullNumber: 7 } as any
+    );
+    const result = await pickFromOpenPrs([makeOpenPr(7)], 'owner', 'repo');
+    expect(result).toEqual({ owner: 'owner', repo: 'repo', pullNumber: 7 });
+  });
+
+  it('returns undefined when the user cancels the QuickPick', async () => {
+    vi.mocked(vscode.window.showQuickPick).mockResolvedValue(undefined as any);
+    const result = await pickFromOpenPrs([makeOpenPr(1)], 'owner', 'repo');
+    expect(result).toBeUndefined();
+  });
+
+  it('falls back to showInputBox when the PR list is empty and user enters a URL', async () => {
+    vi.mocked(vscode.env.clipboard.readText).mockResolvedValue('');
+    vi.mocked(vscode.window.showInputBox).mockResolvedValue(
+      'https://github.com/owner/repo/pull/42'
+    );
+    const result = await pickFromOpenPrs([], 'owner', 'repo');
+    expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+    expect(result).toEqual({ owner: 'owner', repo: 'repo', pullNumber: 42 });
+  });
+
+  it('returns undefined when the PR list is empty and user cancels the fallback input', async () => {
+    vi.mocked(vscode.env.clipboard.readText).mockResolvedValue('');
+    vi.mocked(vscode.window.showInputBox).mockResolvedValue(undefined);
+    const result = await pickFromOpenPrs([], 'owner', 'repo');
+    expect(result).toBeUndefined();
+  });
+
+  it('QuickPick label format is "#N — <title>"', async () => {
+    vi.mocked(vscode.window.showQuickPick).mockResolvedValue(undefined as any);
+    await pickFromOpenPrs([makeOpenPr(3)], 'owner', 'repo');
+    const items: any[] = vi.mocked(vscode.window.showQuickPick).mock.calls[0][0] as any[];
+    expect(items[0].label).toBe('#3 — Fix issue 3');
   });
 });

@@ -35,11 +35,18 @@ vi.mock('vscode', () => ({
     fs: { readFile: vi.fn(), writeFile: vi.fn() },
   },
   lm: { selectChatModels: vi.fn() },
+  window: { showQuickPick: vi.fn() },
   LanguageModelChatMessage: { User: vi.fn((content: string) => ({ role: 'user', content })) },
+  CancellationTokenSource: class {
+    token = { isCancellationRequested: false, onCancellationRequested: vi.fn() };
+    cancel() { this.token.isCancellationRequested = true; }
+    dispose() {}
+  },
 }));
 
 import * as vscode from 'vscode';
 import { computeChangedLineRange, resolveWorkspaceFile, applyFix } from '../../fixApplier';
+import { clearModelCache } from '../../modelSelector';
 import type { AnnotatedComment } from '../../workPlanGenerator';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -151,7 +158,10 @@ describe('resolveWorkspaceFile', () => {
 // ─── applyFix ─────────────────────────────────────────────────────────────────
 
 describe('applyFix', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearModelCache();
+  });
 
   it('emits state:applying immediately', async () => {
     const statuses: string[] = [];
@@ -282,10 +292,28 @@ describe('applyFix', () => {
         Buffer.from('const x = 1;') as any
       );
 
-      // Model that never resolves
+      // Model whose stream hangs until the cancellation token fires
       const hangingModel = {
-        sendRequest: vi.fn().mockReturnValue(
-          new Promise(() => { /* never resolves */ })
+        sendRequest: vi.fn().mockImplementation(
+          (_messages: any, _opts: any, token: any) => ({
+            text: {
+              [Symbol.asyncIterator]() {
+                return {
+                  next() {
+                    // Block until the token is cancelled, then reject
+                    return new Promise<never>((_resolve, reject) => {
+                      const interval = setInterval(() => {
+                        if (token?.isCancellationRequested) {
+                          clearInterval(interval);
+                          reject(new Error('Cancelled'));
+                        }
+                      }, 100);
+                    });
+                  },
+                };
+              },
+            },
+          })
         ),
       };
       vi.mocked(vscode.lm.selectChatModels).mockResolvedValue([
@@ -294,7 +322,7 @@ describe('applyFix', () => {
 
       const statuses: any[] = [];
       const fixPromise = applyFix(makeAnnotated(), (s) => statuses.push(s));
-      await vi.advanceTimersByTimeAsync(31_000);
+      await vi.advanceTimersByTimeAsync(91_000);
       await fixPromise;
 
       const failed = statuses.find((s) => s.state === 'failed');
