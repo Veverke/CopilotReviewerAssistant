@@ -139,7 +139,7 @@ Make the Webview panel look modern and efficient while staying native to VS Code
 
 ---
 
-## Phase 11 — Packaging & Publishing `[ ]`
+## Phase 11 — Packaging & Publishing `[x]`
 
 Prepare the extension for distribution.
 

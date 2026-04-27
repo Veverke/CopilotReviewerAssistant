@@ -1,13 +1,17 @@
 {
   "name": "copilot-reviewer-assistant",
   "displayName": "Copilot Reviewer Assistant",
-  "description": "A VS Code extension that fetches pending Copilot PR review recommendations and lets you review, select, and apply them to your local workspace — all without leaving the editor.",
-  "version": "1.0.0",
+  "description": "GitHub Copilot review suggestions don't always come with an 'Apply' button. This extension fills that gap — fetch every pending Copilot review comment and apply all fixes automatically, straight from VS Code.",
+  "version": "0.1.0",
   "publisher": "Veverke",
+  "icon": "media/icon.png",
   "license": "MIT AND Commons-Clause",
   "repository": {
     "type": "git",
     "url": "https://github.com/Veverke/CopilotReviewerAssistant"
+  },
+  "bugs": {
+    "url": "https://github.com/Veverke/CopilotReviewerAssistant/issues"
   },
   "engines": {
     "vscode": "^1.90.0"
@@ -15,6 +19,7 @@
   "categories": [
     "Other"
   ],
+  "keywords": ["copilot", "github", "pull request", "code review", "ai"],
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {

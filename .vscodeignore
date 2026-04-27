@@ -2,11 +2,17 @@
 .vscode-test/**
 src/**
 node_modules/**
+__mocks__/**
+out/test/**
+.github/**
 .gitignore
 .yarnrc
 vsc-extension-quickstart.md
+vitest.config.*
 **/tsconfig.json
 **/eslint.config.mjs
 **/*.map
 **/*.ts
 **/.vscode-test.*
+docs/**
+intent.md

@@ -1,36 +1,48 @@
 # Copilot Reviewer Assistant
 
-A VS Code extension that fetches pending Copilot PR review recommendations and lets you review, select, and apply them to your local workspace — all without leaving the editor.
+> **GitHub Copilot review suggestions don't always come with an "Apply" button. This extension makes sure every single one can be applied automatically.**
 
 ## The Problem
 
-When GitHub Copilot is added as a PR reviewer, it leaves code recommendations as review comments. The "Fix with Copilot" button in the GitHub UI is unreliable — it frequently adds another comment instead of producing a committable change. There is no native way to bulk-review and apply Copilot's pending recommendations with per-item control.
+When you add GitHub Copilot as a reviewer on a pull request, it does a great job analysing your code and leaving detailed suggestions. For some of them, GitHub provides an **Apply suggestion** button directly in the web UI — convenient, but inconsistent. For many others, no such button appears: you are left reading the comment and making the change by hand.
+
+This is the gap the extension was built to close.
+
+**Copilot Reviewer Assistant** fetches every pending Copilot review comment from your PR and applies all the suggested fixes automatically to your local workspace — including the ones GitHub's UI could not handle. No copy-pasting, no hunting through files, no manual edits. If you want automated code review, you should be able to see it through from start to finish.
+
+If you have ever stared at a batch of Copilot suggestions with no Apply button and thought *"I just want these done"*, this extension is for you.
+
+## Additional Benefits
+
+Beyond the core "apply Copilot suggestions" workflow, the extension gives you a richer review experience than the GitHub web UI:
+
+- **AI-generated work plan per suggestion** — before touching any file, the extension generates a plain-English description of exactly what change will be made and why, so you always know what you are approving.
+- **Complexity indicator** — each review card is tagged with an estimated complexity (trivial / moderate / complex) so you can triage at a glance.
+- **Grouped by file** — suggestions are organised by the file they affect. You can choose to handle all suggestions for a single file at a time, rather than processing the entire PR in one go.
+- **Selective apply** — uncheck any suggestion you want to skip. Apply one, some, or all — your choice.
+- **Live progress feedback** — each card shows a real-time status (pending → applying → done / failed) so you always know where things stand.
+- **Git integration** — a single **Stage, Commit & Push** button stages the changed files and creates a commit with an auto-generated message summarising everything that was applied.
+- **Themed UI** — the panel respects VS Code's theme system and looks correct in dark, light, and high-contrast modes.
 
 ## Features
 
 - **Paste a PR URL** — enter any GitHub pull request URL (public or private repository).
 - **Automatic authentication** — signs in transparently via VS Code's built-in GitHub auth provider; no manual token setup required.
 - **Fetches Copilot's comments** — retrieves all review comments left by `copilot-pull-request-reviewer[bot]` via the GitHub REST API, with full pagination support.
-- **AI-generated work plans** — for each recommendation, calls the VS Code Language Model API to produce a concise description of what change needs to be made and why, shown before any file is touched.
-- **Interactive checklist panel** — a Webview panel lists all recommendations as cards (all selected by default), each showing:
-  - Affected file path and line number
-  - Copilot's recommendation body (collapsible)
-  - The AI-generated work plan
-  - Live status indicator (pending → applying → done / failed)
-- **Selective apply** — uncheck any items you want to skip, then click **Apply Selected Fixes**. Each fix is written to your local workspace file using the Language Model API.
-- **Git integration** — after fixes are applied, a **Stage, Commit & Push** button stages the changed files and creates a commit with a generated message summarising the applied recommendations.
-- **Robust error handling** — outdated comments are excluded (with a count notice), files absent from the workspace are pre-flagged, closed/merged PRs show a banner, and per-item retry is available when LM quota is exceeded.
-- **Themed UI** — the panel uses VS Code's CSS variable system and looks correct in every theme (dark, light, high contrast).
+- **Outdated comment filtering** — stale or resolved comments are excluded automatically (shown as a count notice).
+- **Per-item retry** — if the language model quota is exceeded mid-run, individual cards can be retried without restarting.
+- **Robust pre-flight checks** — files absent from the local workspace are flagged before anything is applied; closed/merged PRs display a warning banner.
 
 ## Usage
 
 1. Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`).
-2. Run **Copilot Reviewer: Open PR Fix Panel**.
-3. Paste a GitHub PR URL when prompted (e.g. `https://github.com/owner/repo/pull/42`). The URL is pre-populated from the clipboard if it matches the expected pattern.
+2. Run **Copilot Reviewer: Open PR Copilot Reviews Panel**.
+3. Paste the GitHub PR URL when prompted. The URL is pre-populated from the clipboard if it matches the expected pattern.
 4. Sign in to GitHub if prompted.
-5. Review the checklist — uncheck any recommendations you want to skip.
-6. Click **Apply Selected Fixes**.
-7. Optionally click **Stage, Commit & Push** once fixes are applied.
+5. Review the generated work plans and complexity tags — uncheck anything you want to skip.
+6. Optionally switch to per-file view to focus on one file at a time.
+7. Click **Apply Selected Fixes**.
+8. Click **Stage, Commit & Push** once you are satisfied with the applied changes.
 
 ## Requirements
 
@@ -50,28 +62,6 @@ This extension does not contribute any user-configurable settings.
 
 ## Release Notes
 
-### 1.0.0
+### 0.1.0
 
 Initial release — full pipeline from PR URL input through Copilot comment fetch, AI work plan generation, Webview checklist, fix application, and Git commit.
-
-
-## Following extension guidelines
-
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
-
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
