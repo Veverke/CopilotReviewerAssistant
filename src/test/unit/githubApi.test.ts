@@ -43,6 +43,7 @@ import {
   fetchCopilotComments,
   fetchOpenPullRequests,
   fetchPrState,
+  fetchPrDetails,
   postReplyComment,
   resolveReviewThread,
 } from '../../githubApi';
@@ -115,12 +116,12 @@ describe('fetchCopilotComments', () => {
     }
   });
 
-  it('accepts logins matching the broad /copilot/i pattern', async () => {
+  it('rejects logins that merely contain "copilot" but are not in the explicit allowlist', async () => {
     const comment = makeRawComment({ user: { login: 'myCopilot-internal[bot]' } });
     vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
 
     const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
-    expect(comments).toHaveLength(1);
+    expect(comments).toHaveLength(0);
   });
 
   it('skips and counts outdated comments (position=null, subject_type=line)', async () => {
@@ -497,5 +498,99 @@ describe('fetchOpenPullRequests', () => {
       'https://api.github.com/repos/owner/repo/pulls?state=open&per_page=100',
       expect.anything()
     );
+  });
+});
+
+// ─── isCopilotBot trust-bypass prevention (Security Issue #4) ────────────────
+
+describe('isCopilotBot trust-bypass prevention', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('rejects a login that merely contains "copilot" (mycopilot)', async () => {
+    const comment = makeRawComment({ user: { login: 'mycopilot' } });
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
+    const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
+    expect(comments).toHaveLength(0);
+  });
+
+  it('rejects "notcopilot"', async () => {
+    const comment = makeRawComment({ user: { login: 'notcopilot' } });
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
+    const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
+    expect(comments).toHaveLength(0);
+  });
+
+  it('rejects "Copilot-evil[bot]"', async () => {
+    const comment = makeRawComment({ user: { login: 'Copilot-evil[bot]' } });
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
+    const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
+    expect(comments).toHaveLength(0);
+  });
+
+  it('accepts a login that is in additionalBotLogins', async () => {
+    const comment = makeRawComment({ user: { login: 'my-custom-bot[bot]' } });
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
+    const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1, undefined, ['my-custom-bot[bot]']);
+    expect(comments).toHaveLength(1);
+  });
+
+  it('does not accept via additionalBotLogins when login does not exactly match', async () => {
+    const comment = makeRawComment({ user: { login: 'my-custom-bot-v2[bot]' } });
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
+    const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1, undefined, ['my-custom-bot[bot]']);
+    expect(comments).toHaveLength(0);
+  });
+});
+
+// ─── fetchPrDetails (Security Issue #9) ──────────────────────────────────────
+
+describe('fetchPrDetails', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('returns combined state, merged, and metadata in one request', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse({
+        state: 'open', merged: false,
+        title: 'My PR', assignees: [{ login: 'alice' }], changed_files: 5,
+      })
+    );
+    const result = await fetchPrDetails('tok', 'o', 'r', 1);
+    expect(result).toEqual({
+      state: 'open', merged: false,
+      title: 'My PR', assignee: 'alice', filesChangedCount: 5,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns safe defaults on network error', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetch)
+        .mockRejectedValueOnce(new Error('timeout'))
+        .mockRejectedValueOnce(new Error('timeout'));
+      const resultPromise = fetchPrDetails('tok', 'o', 'r', 1);
+      await vi.advanceTimersByTimeAsync(1100);
+      const result = await resultPromise;
+      expect(result).toEqual({ state: 'unknown', merged: false, title: '', assignee: null, filesChangedCount: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns safe defaults on non-ok HTTP response', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse({}, 404));
+    const result = await fetchPrDetails('tok', 'o', 'r', 1);
+    expect(result).toEqual({ state: 'unknown', merged: false, title: '', assignee: null, filesChangedCount: 0 });
+  });
+
+  it('fetchPrState still works as a thin wrapper that makes only one HTTP call', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse({ state: 'closed', merged: true, title: 'T', assignees: [], changed_files: 0 })
+    );
+    const result = await fetchPrState('tok', 'o', 'r', 1);
+    expect(result).toEqual({ state: 'closed', merged: true });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

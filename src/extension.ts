@@ -3,12 +3,12 @@
 import * as vscode from 'vscode';
 import { getGitHubToken } from './auth';
 import { pickFromOpenPrs } from './prInput';
-import { fetchCopilotComments, fetchOpenPullRequests, fetchPrState, fetchPrMetadata, postReplyComment, resolveReviewThread } from './githubApi';
-import type { PrMetadata } from './githubApi';
+import { fetchCopilotComments, fetchOpenPullRequests, fetchPrDetails, postReplyComment, resolveReviewThread } from './githubApi';
+import type { PrDetails } from './githubApi';
 import { generateAllWorkPlans } from './workPlanGenerator';
 import { ReviewPanel } from './reviewPanel';
 import { applyFix, resolveWorkspaceFile, DoneFixResult } from './fixApplier';
-import { stageFiles, commitChanges, pushChanges, getRemoteOwnerRepo, buildProject } from './gitHelper';
+import { stageFiles, commitChanges, pushChanges, getRemoteOwnerRepo, buildProject, detectBuildCommand } from './gitHelper';
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
@@ -58,16 +58,18 @@ export function activate(context: vscode.ExtensionContext) {
 
 		let fetchResult: { comments: import('./githubApi').ReviewComment[]; outdatedCount: number } | undefined;
 		let annotated: import('./workPlanGenerator').AnnotatedComment[] | undefined;
-		let prStateResult: { state: string; merged: boolean } | undefined;
-		let prMeta: PrMetadata | undefined;
+		let prDetails: PrDetails | undefined;
 
 		try {
 			await vscode.window.withProgress(
 				{ location: vscode.ProgressLocation.Window, title: 'Fetching PR data…', cancellable: false },
 				async () => {
+					const additionalBotLogins: readonly string[] = vscode.workspace
+						.getConfiguration('copilotReviewer')
+						.get<string[]>('additionalBotLogins') ?? [];
 					try {
 						outputChannel.show(true);
-						fetchResult = await fetchCopilotComments(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber, outputChannel);
+						fetchResult = await fetchCopilotComments(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber, outputChannel, additionalBotLogins);
 					} catch (err: unknown) {
 						const errMsg = err instanceof Error ? err.message : '';
 						if (errMsg.includes('authentication failed')) {
@@ -76,7 +78,7 @@ export function activate(context: vscode.ExtensionContext) {
 							} catch {
 								throw err;
 							}
-							fetchResult = await fetchCopilotComments(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber, outputChannel);
+							fetchResult = await fetchCopilotComments(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber, outputChannel, additionalBotLogins);
 						} else {
 							throw err;
 						}
@@ -84,10 +86,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 					const { comments } = fetchResult!;
 
-					[annotated, prStateResult, prMeta] = await Promise.all([
+					[annotated, prDetails] = await Promise.all([
 						generateAllWorkPlans(comments),
-						fetchPrState(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber),
-						fetchPrMetadata(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber),
+						fetchPrDetails(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber),
 					]);
 
 					// Pre-flight: check which files are present in the workspace
@@ -162,10 +163,13 @@ export function activate(context: vscode.ExtensionContext) {
 		// Build then commit: run build first; on failure expose retry button; on success commit
 		async function buildThenCommit(doneResults: DoneFixResult[]): Promise<void> {
 			pendingDoneResults = doneResults;
-			panel.postGitStatus({ state: 'building' });
+			const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+			const detectedCmd = rootPath ? detectBuildCommand(rootPath) : undefined;
+			panel.postGitStatus({ state: 'building', command: detectedCmd ?? undefined });
 			const buildResult = await buildProject();
 			if (!buildResult.ok) {
-				panel.postGitStatus({ state: 'build-failed', reason: buildResult.reason });
+				outputChannel.appendLine(`[build] ${buildResult.details}`);
+				panel.postGitStatus({ state: 'build-failed', reason: buildResult.reason, details: buildResult.details });
 				return;
 			}
 			if (buildResult.skipped && buildResult.reason) {
@@ -175,7 +179,7 @@ export function activate(context: vscode.ExtensionContext) {
 			await commitAndPush(doneResults);
 		}
 
-		panel.setContent(rawUrl, annotated!, prMeta!, (selectedIds) => {
+		panel.setContent(rawUrl, annotated!, prDetails!, (selectedIds) => {
 			const selected = annotated!.filter((a) => selectedIds.includes(a.comment.id));
 			void (async () => {
 				const total = selected.length;
@@ -215,10 +219,13 @@ export function activate(context: vscode.ExtensionContext) {
 		}, () => {
 			// onRetryBuild — re-run build, then proceed if it passes
 			void (async () => {
-				panel.postGitStatus({ state: 'building' });
+				const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+				const detectedCmd = rootPath ? detectBuildCommand(rootPath) : undefined;
+				panel.postGitStatus({ state: 'building', command: detectedCmd ?? undefined });
 				const buildResult = await buildProject();
 				if (!buildResult.ok) {
-					panel.postGitStatus({ state: 'build-failed', reason: buildResult.reason });
+					outputChannel.appendLine(`[build] ${buildResult.details}`);
+					panel.postGitStatus({ state: 'build-failed', reason: buildResult.reason, details: buildResult.details });
 					return;
 				}
 				panel.postGitStatus({ state: 'build-succeeded' });
@@ -230,8 +237,8 @@ export function activate(context: vscode.ExtensionContext) {
 		if (outdatedCount > 0) {
 			panel.postBanner(`${outdatedCount} outdated comment(s) were excluded.`, 'warning');
 		}
-		if (prStateResult!.state !== 'unknown' && prStateResult!.state !== 'open') {
-			const label = prStateResult!.merged ? 'merged' : prStateResult!.state;
+		if (prDetails!.state !== 'unknown' && prDetails!.state !== 'open') {
+			const label = prDetails!.merged ? 'merged' : prDetails!.state;
 			panel.postBanner(`Note: this PR is ${label}. Fixes will still be applied locally.`, 'info');
 		}
 	});

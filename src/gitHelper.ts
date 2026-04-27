@@ -29,22 +29,44 @@ interface Repository {
   push(): Promise<void>;
 }
 
+// ─── Build detection & execution ────────────────────────────────────────────
+
+export type BuildResult =
+  | { ok: true; skipped?: true; reason?: string }
+  | { ok: false; reason: string; details: string };
+
 // ─── Status type used by ReviewPanel to update the Webview ───────────────────
 
 export type GitStatus =
-  | { state: 'building' }
-  | { state: 'build-failed'; reason: string }
+  | { state: 'building'; command?: string }
+  | { state: 'build-failed'; reason: string; details: string }
   | { state: 'build-succeeded' }
   | { state: 'pushing' }
   | { state: 'pushed' }
   | { state: 'push-failed'; reason: string }
   | { state: 'no-repo' };
 
-// ─── Build detection & execution ────────────────────────────────────────────
+/** Allowlist of executables permitted as build commands. */
+const ALLOWED_BUILD_EXECUTABLES = new Set([
+  'npm', 'npx', 'go', 'cargo', 'dotnet', 'mvn', 'python', 'pyright',
+  'gradlew', 'gradlew.bat', './gradlew',
+]);
 
-export type BuildResult =
-  | { ok: true; skipped?: true; reason?: string }
-  | { ok: false; reason: string };
+/**
+ * Splits a build command string into an executable + args array.
+ * Returns undefined if the executable is not in the allowlist.
+ */
+export function splitBuildCommand(cmd: string): { executable: string; args: string[] } | undefined {
+  const parts = cmd.trim().split(/\s+/);
+  if (parts.length === 0) {
+    return undefined;
+  }
+  const rawExec = parts[0];
+  if (!ALLOWED_BUILD_EXECUTABLES.has(rawExec)) {
+    return undefined;
+  }
+  return { executable: rawExec, args: parts.slice(1) };
+}
 
 /** Returns the shell command to build the project at `rootPath`, or undefined if unrecognised. */
 export function detectBuildCommand(rootPath: string): string | undefined {
@@ -52,11 +74,17 @@ export function detectBuildCommand(rootPath: string): string | undefined {
   const pkgPath = path.join(rootPath, 'package.json');
   if (fs.existsSync(pkgPath)) {
     try {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { scripts?: Record<string, string> };
-      const scripts = pkg.scripts ?? {};
-      for (const name of ['build', 'compile', 'typecheck', 'type-check']) {
-        if (scripts[name]) {
-          return `npm run ${name}`;
+      const pkg: unknown = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      if (
+        typeof pkg === 'object' && pkg !== null &&
+        typeof (pkg as Record<string, unknown>).scripts === 'object' &&
+        (pkg as Record<string, unknown>).scripts !== null
+      ) {
+        const scripts = (pkg as { scripts: Record<string, unknown> }).scripts;
+        for (const name of ['build', 'compile', 'typecheck', 'type-check']) {
+          if (typeof scripts[name] === 'string' && scripts[name]) {
+            return `npm run ${name}`;
+          }
         }
       }
     } catch {
@@ -140,11 +168,23 @@ export async function buildProject(): Promise<BuildResult> {
     return { ok: true, skipped: true, reason: 'No recognised build system found in workspace root' };
   }
 
+  const split = splitBuildCommand(cmd);
+  if (!split) {
+    return { ok: true, skipped: true, reason: `Build command not in allowlist: ${cmd.split(/\s+/)[0]}` };
+  }
+
+  // Resolve relative executable paths (e.g. ./gradlew) against rootPath
+  let executable = split.executable;
+  if (executable.startsWith('./') || executable === 'gradlew.bat') {
+    executable = path.join(rootPath, executable.startsWith('./') ? executable.slice(2) : executable);
+  }
+  const { args } = split;
+
   return new Promise((resolve) => {
-    cp.exec(cmd, { cwd: rootPath, timeout: 120_000 }, (error, stdout, stderr) => {
+    cp.execFile(executable, args, { cwd: rootPath, timeout: 120_000 }, (error, stdout, stderr) => {
       if (error) {
-        const output = (stderr.trim() || stdout.trim() || error.message).slice(0, 3000);
-        resolve({ ok: false, reason: `\`${cmd}\` failed:\n${output}` });
+        const details = (stderr.trim() || stdout.trim() || error.message).slice(0, 3000);
+        resolve({ ok: false, reason: 'Build failed — see Output panel for details', details });
       } else {
         resolve({ ok: true });
       }

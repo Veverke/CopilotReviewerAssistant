@@ -18,6 +18,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('vscode', () => ({
   env: { clipboard: { readText: vi.fn() } },
   window: { showInputBox: vi.fn(), showQuickPick: vi.fn() },
+  workspace: {
+    getConfiguration: vi.fn().mockReturnValue({
+      get: vi.fn().mockReturnValue(false),
+    }),
+  },
 }));
 
 vi.mock('../../githubApi', () => ({}));
@@ -142,5 +147,73 @@ describe('pickFromOpenPrs', () => {
     await pickFromOpenPrs([makeOpenPr(3)], 'owner', 'repo');
     const items: any[] = vi.mocked(vscode.window.showQuickPick).mock.calls[0][0] as any[];
     expect(items[0].label).toBe('#3 — Fix issue 3');
+  });
+});
+
+// ─── parsePrUrl pull number bounds (Security Issue #8) ───────────────────────
+
+describe('parsePrUrl pull number bounds', () => {
+  it('throws for pull/0', () => {
+    expect(() => parsePrUrl('https://github.com/owner/repo/pull/0')).toThrow('Invalid pull request number');
+  });
+
+  it('throws for an astronomically large pull number', () => {
+    expect(() => parsePrUrl('https://github.com/owner/repo/pull/99999999999')).toThrow('Invalid pull request number');
+  });
+
+  it('accepts the GraphQL Int max value 2147483647', () => {
+    const result = parsePrUrl('https://github.com/owner/repo/pull/2147483647');
+    expect(result.pullNumber).toBe(2147483647);
+  });
+
+  it('accepts pull number 1 (minimum valid)', () => {
+    const result = parsePrUrl('https://github.com/owner/repo/pull/1');
+    expect(result.pullNumber).toBe(1);
+  });
+});
+
+// ─── promptForPrUrl clipboard gating (Security Issue #7) ─────────────────────
+
+import { promptForPrUrl } from '../../prInput';
+
+describe('promptForPrUrl clipboard gating', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+      get: vi.fn().mockReturnValue(false),
+    } as any);
+  });
+
+  it('does NOT read clipboard when preFillFromClipboard is false (default)', async () => {
+    vi.mocked(vscode.window.showInputBox).mockResolvedValue(undefined);
+    await promptForPrUrl();
+    expect(vscode.env.clipboard.readText).not.toHaveBeenCalled();
+  });
+
+  it('reads clipboard and pre-fills when preFillFromClipboard is true and clipboard has a PR URL', async () => {
+    vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+      get: vi.fn().mockReturnValue(true),
+    } as any);
+    vi.mocked(vscode.env.clipboard.readText).mockResolvedValue('https://github.com/owner/repo/pull/5');
+    vi.mocked(vscode.window.showInputBox).mockResolvedValue(undefined);
+
+    await promptForPrUrl();
+
+    expect(vscode.env.clipboard.readText).toHaveBeenCalled();
+    const callOpts: any = vi.mocked(vscode.window.showInputBox).mock.calls[0][0];
+    expect(callOpts.value).toBe('https://github.com/owner/repo/pull/5');
+  });
+
+  it('does not pre-fill when clipboard content is not a PR URL even if preFillFromClipboard is true', async () => {
+    vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+      get: vi.fn().mockReturnValue(true),
+    } as any);
+    vi.mocked(vscode.env.clipboard.readText).mockResolvedValue('some random text');
+    vi.mocked(vscode.window.showInputBox).mockResolvedValue(undefined);
+
+    await promptForPrUrl();
+
+    const callOpts: any = vi.mocked(vscode.window.showInputBox).mock.calls[0][0];
+    expect(callOpts.value).toBeUndefined();
   });
 });

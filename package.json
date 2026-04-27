@@ -28,7 +28,24 @@
         "command": "copilotReviewer.openPanel",
         "title": "Copilot Reviewer: Open PR Copilot Reviews Panel"
       }
-    ]
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Copilot Reviewer Assistant",
+      "properties": {
+        "copilotReviewer.additionalBotLogins": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Additional GitHub login names to treat as trusted Copilot bot accounts (explicit allowlist only — no patterns)."
+        },
+        "copilotReviewer.preFillFromClipboard": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, automatically reads the clipboard to pre-fill the PR URL input box if a GitHub PR URL is detected."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

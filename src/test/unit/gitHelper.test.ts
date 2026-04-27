@@ -29,7 +29,7 @@ vi.mock('fs');
 
 import * as vscode from 'vscode';
 import * as fs from 'fs';
-import { stageFiles, commitChanges, pushChanges, getRemoteOwnerRepo, detectBuildCommand } from '../../gitHelper';
+import { stageFiles, commitChanges, pushChanges, getRemoteOwnerRepo, detectBuildCommand, splitBuildCommand } from '../../gitHelper';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -337,5 +337,64 @@ describe('detectBuildCommand', () => {
     vi.mocked(fs.readdirSync).mockReturnValue([] as any);
     // Should not throw; falls through to return undefined
     expect(() => detectBuildCommand('/ws')).not.toThrow();
+  });
+
+  it('does not use scripts entry when scripts is not an object (JSON type guard)', () => {
+    mockFs({
+      existsMap: { '/ws/package.json': true, '/ws/tsconfig.json': true },
+      pkgJson: { scripts: 'invalid' },
+    });
+    // Falls through to tsconfig.json detection since scripts is not a valid object
+    expect(detectBuildCommand('/ws')).toBe('npx tsc --noEmit');
+  });
+
+  it('does not use scripts entry when a script value is not a string', () => {
+    mockFs({
+      existsMap: { '/ws/package.json': true, '/ws/tsconfig.json': true },
+      pkgJson: { scripts: { build: 42 } },
+    });
+    // Falls through since build value is not a string
+    expect(detectBuildCommand('/ws')).toBe('npx tsc --noEmit');
+  });
+});
+
+// ─── splitBuildCommand (Security Issue #2) ────────────────────────────────────
+
+describe('splitBuildCommand', () => {
+  it('splits "npm run build" into executable npm and args [run, build]', () => {
+    expect(splitBuildCommand('npm run build')).toEqual({ executable: 'npm', args: ['run', 'build'] });
+  });
+
+  it('splits "npx tsc --noEmit" correctly', () => {
+    expect(splitBuildCommand('npx tsc --noEmit')).toEqual({ executable: 'npx', args: ['tsc', '--noEmit'] });
+  });
+
+  it('splits "cargo check" correctly', () => {
+    expect(splitBuildCommand('cargo check')).toEqual({ executable: 'cargo', args: ['check'] });
+  });
+
+  it('splits "dotnet build --nologo -q" correctly', () => {
+    expect(splitBuildCommand('dotnet build --nologo -q')).toEqual({
+      executable: 'dotnet',
+      args: ['build', '--nologo', '-q'],
+    });
+  });
+
+  it('returns undefined for an unlisted executable', () => {
+    expect(splitBuildCommand('bash -c "rm -rf /"')).toBeUndefined();
+  });
+
+  it('returns undefined for "sh -c evil"', () => {
+    expect(splitBuildCommand('sh -c evil')).toBeUndefined();
+  });
+
+  it('returns undefined for an empty string', () => {
+    expect(splitBuildCommand('')).toBeUndefined();
+  });
+
+  it('handles leading/trailing whitespace', () => {
+    const result = splitBuildCommand('  npm run build  ');
+    expect(result?.executable).toBe('npm');
+    expect(result?.args).toEqual(['run', 'build']);
   });
 });

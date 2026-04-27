@@ -244,13 +244,15 @@
   function updateGitStatus(status) {
     if (status.state === 'building') {
       stageCommitPushBtn.disabled = true;
-      stageCommitPushBtn.textContent = 'Building\u2026';
+      stageCommitPushBtn.textContent = status.command
+        ? 'Running \u0060' + status.command + '\u0060\u2026'
+        : 'Building\u2026';
       gitNotice.classList.add('hidden');
       gitNotice.textContent = '';
     } else if (status.state === 'build-failed') {
       stageCommitPushBtn.disabled = false;
       stageCommitPushBtn.textContent = 'Stage, Commit \u0026 Push';
-      showBuildFailedNotice(status.reason);
+      showBuildFailedNotice(status.reason, status.details);
     } else if (status.state === 'build-succeeded') {
       stageCommitPushBtn.disabled = true;
       stageCommitPushBtn.textContent = 'Build succeeded \u2713';
@@ -273,19 +275,21 @@
     }
   }
 
-  function showBuildFailedNotice(reason) {
+  function showBuildFailedNotice(reason, details) {
     gitNotice.innerHTML = '';
     gitNotice.className = 'git-notice git-notice-error';
 
     var header = document.createElement('div');
     header.className = 'git-notice-header';
-    header.textContent = '\u26a0\ufe0f Build failed \u2014 fix the errors below, then click Retry Build.';
+    header.textContent = '\u26a0\ufe0f ' + reason;
     gitNotice.appendChild(header);
 
-    var pre = document.createElement('pre');
-    pre.className = 'git-notice-pre';
-    pre.textContent = reason;
-    gitNotice.appendChild(pre);
+    if (details) {
+      var pre = document.createElement('pre');
+      pre.className = 'git-notice-pre';
+      pre.textContent = details;
+      gitNotice.appendChild(pre);
+    }
 
     var retryBtn = document.createElement('button');
     retryBtn.className = 'secondary';
