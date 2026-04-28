@@ -470,25 +470,14 @@ describe('fetchOpenPullRequests', () => {
     expect(prs).toEqual([]);
   });
 
-  it('returns an empty array on a non-ok HTTP response', async () => {
+  it('throws an access-denied error on a 403 response', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(makeResponse({}, 403));
-    const prs = await fetchOpenPullRequests('tok', 'o', 'r');
-    expect(prs).toEqual([]);
+    await expect(fetchOpenPullRequests('tok', 'o', 'r')).rejects.toThrow('Access denied');
   });
 
-  it('returns an empty array on a network error', async () => {
-    vi.useFakeTimers();
-    try {
-      vi.mocked(fetch)
-        .mockRejectedValueOnce(new Error('network error'))
-        .mockRejectedValueOnce(new Error('still down'));
-      const resultPromise = fetchOpenPullRequests('tok', 'o', 'r');
-      await vi.advanceTimersByTimeAsync(1100);
-      const prs = await resultPromise;
-      expect(prs).toEqual([]);
-    } finally {
-      vi.useRealTimers();
-    }
+  it('throws a network error when fetch fails for open PRs', async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error('still down'));
+    await expect(fetchOpenPullRequests('tok', 'o', 'r')).rejects.toThrow('Network error while contacting GitHub');
   });
 
   it('requests the open PRs endpoint with the correct URL', async () => {

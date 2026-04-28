@@ -18,6 +18,8 @@ vi.mock('vscode', () => ({
 import * as vscode from 'vscode';
 import { getGitHubToken } from '../../auth';
 
+const noPatSecrets = { get: vi.fn().mockResolvedValue(undefined), store: vi.fn(), delete: vi.fn() } as any;
+
 describe('getGitHubToken', () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -29,7 +31,7 @@ describe('getGitHubToken', () => {
       account: { id: 'user', label: 'User' },
     } as any);
 
-    await getGitHubToken();
+    await getGitHubToken(noPatSecrets);
 
     expect(vscode.authentication.getSession).toHaveBeenCalledWith(
       'github',
@@ -46,7 +48,7 @@ describe('getGitHubToken', () => {
       account: { id: 'user', label: 'User' },
     } as any);
 
-    const token = await getGitHubToken();
+    const token = await getGitHubToken(noPatSecrets);
 
     expect(token).toBe('ghp_test_token_123');
   });
@@ -54,7 +56,7 @@ describe('getGitHubToken', () => {
   it('throws when session is null (user cancelled sign-in)', async () => {
     vi.mocked(vscode.authentication.getSession).mockResolvedValue(null as any);
 
-    await expect(getGitHubToken()).rejects.toThrow(
+    await expect(getGitHubToken(noPatSecrets)).rejects.toThrow(
       'GitHub sign-in was cancelled. Authentication is required to access PR comments.'
     );
   });
@@ -67,8 +69,17 @@ describe('getGitHubToken', () => {
       account: { id: 'user', label: 'User' },
     } as any);
 
-    await expect(getGitHubToken()).rejects.toThrow(
+    await expect(getGitHubToken(noPatSecrets)).rejects.toThrow(
       'GitHub authentication succeeded but no access token could be retrieved.'
     );
+  });
+
+  it('returns the stored PAT from SecretStorage without calling getSession', async () => {
+    const patSecrets = { get: vi.fn().mockResolvedValue('ghp_stored_pat'), store: vi.fn(), delete: vi.fn() } as any;
+
+    const token = await getGitHubToken(patSecrets);
+
+    expect(token).toBe('ghp_stored_pat');
+    expect(vscode.authentication.getSession).not.toHaveBeenCalled();
   });
 });

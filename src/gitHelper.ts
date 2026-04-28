@@ -11,6 +11,7 @@ interface GitExtension {
 
 interface GitAPI {
   repositories: Repository[];
+  onDidOpenRepository: vscode.Event<Repository>;
 }
 
 interface GitRemote {
@@ -207,6 +208,20 @@ async function getActiveRepository(): Promise<Repository | undefined> {
   const git = await getGitAPI();
   if (!git) {
     return undefined;
+  }
+
+  // The Git extension may still be scanning on first activation — poll up to 3 s
+  if (git.repositories.length === 0) {
+    await new Promise<void>((resolve) => {
+      let attempts = 0;
+      const interval = setInterval(() => {
+        attempts++;
+        if (git.repositories.length > 0 || attempts >= 30) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 100);
+    });
   }
 
   const workspaceFolders = vscode.workspace.workspaceFolders;

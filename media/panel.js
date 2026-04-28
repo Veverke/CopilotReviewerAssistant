@@ -51,7 +51,7 @@
       if (currentSort === 'complexity') {
         var ca = COMPLEXITY_ORDER[a.dataset.complexity] ?? 0;
         var cb = COMPLEXITY_ORDER[b.dataset.complexity] ?? 0;
-        if (ca !== cb) { return ca - cb; }
+        if (ca !== cb) { return cb - ca; }
         return Number(a.dataset.number || 0) - Number(b.dataset.number || 0);
       }
       // default: original order
@@ -344,6 +344,14 @@
       statusEl.classList.add('fix-applying');
       statusEl.textContent = '';
       card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      // Adjust for sticky header so the card isn't hidden behind it
+      var stickyTop = document.querySelector('.sticky-top');
+      var headerHeight = stickyTop ? stickyTop.offsetHeight : 0;
+      var cardTop = card.getBoundingClientRect().top + window.scrollY;
+      var viewportTop = window.scrollY + headerHeight;
+      if (cardTop < viewportTop + 8) {
+        window.scrollTo({ top: cardTop - headerHeight - 8, behavior: 'smooth' });
+      }
     } else if (status.state === 'done') {
       card.classList.add('state-done');
       statusEl.classList.add('fix-done');
@@ -383,6 +391,10 @@
     var summary = det.querySelector('summary');
     var body = det.querySelector('.details-body');
     if (!summary || !body) { return; }
+    // Initialise open state — details rendered with [open] must have maxHeight set
+    if (det.open) {
+      body.style.maxHeight = 'none';
+    }
     summary.addEventListener('click', function(e) {
       e.preventDefault();
       if (det.open) {

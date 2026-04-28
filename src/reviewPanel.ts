@@ -148,6 +148,7 @@ export class ReviewPanel {
     prUrl: string,
     comments: AnnotatedComment[],
     prMeta: PrMetadata,
+    modelName: string | undefined,
     onApplyFixes: (selectedIds: number[]) => void,
     onStageCommitAndPush: (doneResults: DoneFixResult[]) => void,
     onRetryFix: (id: number) => void,
@@ -159,19 +160,24 @@ export class ReviewPanel {
     this._onRetryFix = onRetryFix;
     this._onRetryBuild = onRetryBuild;
     this._doneResults = [];
-    this._update(prUrl, comments);
+    this._update(prUrl, comments, modelName);
   }
 
   public showError(message: string): void {
     this._panel.webview.html = this._getErrorHtml(this._panel.webview, message);
   }
 
-  private _update(prUrl: string, comments: AnnotatedComment[]): void {
-    this._panel.webview.html = this._getHtmlForWebview(this._panel.webview, prUrl, comments, this._prMeta);
+  public postLoadingProgress(completed: number, total: number): void {
+    this._panel.webview.postMessage({ type: 'loadingProgress', completed, total });
+  }
+
+  private _update(prUrl: string, comments: AnnotatedComment[], modelName?: string): void {
+    this._panel.webview.html = this._getHtmlForWebview(this._panel.webview, prUrl, comments, this._prMeta, modelName);
   }
 
   private _getLoadingHtml(webview: vscode.Webview, prUrl: string): string {
     const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._mediaUri, 'panel.css'));
+    const nonce = crypto.randomBytes(16).toString('hex');
     const urlMatch = prUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
     const repoLabel = urlMatch ? `${urlMatch[1]}/${urlMatch[2]}` : prUrl;
     const prNumber = urlMatch ? `#${urlMatch[3]}` : '';
@@ -179,7 +185,7 @@ export class ReviewPanel {
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource};" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link href="${cssUri}" rel="stylesheet" />
   <title>Copilot Reviewer Assistant</title>
@@ -189,12 +195,30 @@ export class ReviewPanel {
     <h1>Copilot Reviewer Assistant</h1>
     <div class="pr-header-meta">
       <span class="pr-meta-item"><span class="pr-meta-key">Repo:</span> ${escapeHtml(repoLabel)} ${escapeHtml(prNumber)}</span>
-    </div>
-  </div>
-  <div class="loading-state">
+      <span class="pr-meta-item"><span class="pr-meta-key">URL:</span> <a class="pr-url-link" href="${safeGithubUrl(prUrl)}" target="_blank">${escapeHtml(prUrl)}</a></span>
     <div class="loading-spinner" role="status" aria-label="Loading PR data"></div>
-    <div class="loading-message">Fetching PR data…</div>
+    <div class="loading-message" id="loading-message">Fetching PR data&hellip;</div>
+    <div class="loading-progress-track" id="loading-progress-track" style="display:none">
+      <div class="loading-progress-fill" id="loading-progress-fill"></div>
+    </div>
+    <div class="loading-progress-label" id="loading-progress-label"></div>
   </div>
+  <script nonce="${nonce}">
+    window.addEventListener('message', function(event) {
+      var msg = event.data;
+      if (msg.type !== 'loadingProgress') { return; }
+      var track = document.getElementById('loading-progress-track');
+      var fill = document.getElementById('loading-progress-fill');
+      var label = document.getElementById('loading-progress-label');
+      var msgEl = document.getElementById('loading-message');
+      if (!track || !fill || !label || !msgEl) { return; }
+      track.style.display = 'block';
+      msgEl.textContent = 'Generating work plans\u2026';
+      var pct = msg.total > 0 ? Math.round((msg.completed / msg.total) * 100) : 0;
+      fill.style.width = pct + '%';
+      label.textContent = msg.completed + ' / ' + msg.total + ' reviews processed';
+    });
+  </script>
 </body>
 </html>`;
   }
@@ -225,7 +249,8 @@ export class ReviewPanel {
     webview: vscode.Webview,
     prUrl: string,
     comments: AnnotatedComment[],
-    prMeta: PrMetadata
+    prMeta: PrMetadata,
+    modelName?: string
   ): string {
     const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._mediaUri, 'panel.css'));
     const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._mediaUri, 'panel.js'));
@@ -278,7 +303,7 @@ export class ReviewPanel {
               ${fileNotFound ? '<span class="badge badge-warning" title="This file does not exist in the current workspace. The fix cannot be applied automatically.">File not found locally</span>' : ''}
               ${linkHtml}
             </div>
-            <details>
+            <details open>
               <summary>Reviewer comment</summary>
               <div class="details-body">
                 <div class="comment-body">${escapeHtml(comment.body)}</div>
@@ -301,51 +326,55 @@ export class ReviewPanel {
   <title>Copilot Reviewer Assistant</title>
 </head>
 <body>
-  <div class="pr-header">
-    <h1>Copilot Reviewer Assistant</h1>
-    ${prMeta.title ? `<div class="pr-header-title"><span class="pr-meta-key">PR Title:</span> ${escapeHtml(prMeta.title)}</div>` : ''}
-    <div class="pr-header-meta">
-      <span class="pr-meta-item"><span class="pr-meta-key">Repo:</span> ${escapeHtml(repoLabel)} ${escapeHtml(prNumber)}</span>
-      ${prMeta.assignee ? `<span class="pr-meta-item"><span class="pr-meta-key">Assignee:</span> ${escapeHtml(prMeta.assignee)}</span>` : ''}
-      ${prMeta.filesChangedCount > 0 ? `<span class="pr-meta-item"><span class="pr-meta-key">Files changed:</span> ${prMeta.filesChangedCount}</span>` : ''}
+  <div class="sticky-top">
+    <div class="pr-header">
+      <h1>Copilot Reviewer Assistant</h1>
+      ${prMeta.title ? `<div class="pr-header-title"><span class="pr-meta-key">PR Title:</span> ${escapeHtml(prMeta.title)}</div>` : ''}
+      <div class="pr-header-meta">
+        <span class="pr-meta-item"><span class="pr-meta-key">Repo:</span> ${escapeHtml(repoLabel)} ${escapeHtml(prNumber)}</span>
+        ${prMeta.assignee ? `<span class="pr-meta-item"><span class="pr-meta-key">Assignee:</span> ${escapeHtml(prMeta.assignee)}</span>` : ''}
+        ${prMeta.filesChangedCount > 0 ? `<span class="pr-meta-item"><span class="pr-meta-key">Files changed:</span> ${prMeta.filesChangedCount}</span>` : ''}
+        ${modelName ? `<span class="pr-meta-item"><span class="pr-meta-key">Model:</span> ${escapeHtml(modelName)}</span>` : ''}
+        <span class="pr-meta-item"><span class="pr-meta-key">URL:</span> <a class="pr-url-link" href="${safeGithubUrl(prUrl)}" target="_blank">${escapeHtml(prUrl)}</a></span>
+      </div>
+      <div class="pr-header-pills">
+        <span class="pill pill-total">${comments.length} total</span>
+        <span class="pill pill-fix-copilot">${fixWithCopilotCount} Fix With Copilot</span>
+        <span class="pill pill-commit-suggestion">${commitSuggestionCount} Commit Suggestion</span>
+      </div>
     </div>
-    <div class="pr-header-pills">
-      <span class="pill pill-total">${comments.length} total</span>
-      <span class="pill pill-fix-copilot">${fixWithCopilotCount} Fix With Copilot</span>
-      <span class="pill pill-commit-suggestion">${commitSuggestionCount} Commit Suggestion</span>
+    <div class="toolbar${comments.length === 0 ? ' hidden' : ''}">
+      <label class="select-all-label">
+        <input type="checkbox" id="select-all-cb" />
+        <span id="select-all-text">Select all</span>
+      </label>
+      <button id="apply-btn" disabled>Apply Selected Fixes</button>
+      <button id="stage-commit-push-btn" class="hidden">Stage, Commit &amp; Push</button>
+      <div class="group-sort-row">
+        <span class="controls-label">Group:</span>
+        <div class="btn-group">
+          <button class="group-btn secondary active" data-group="none">None</button>
+          <button class="group-btn secondary" data-group="file">By File</button>
+          <button class="group-btn secondary" data-group="type">By Type</button>
+        </div>
+        <span class="controls-label">Sort:</span>
+        <div class="btn-group">
+          <button class="sort-btn secondary active" data-sort="default">Default</button>
+          <button class="sort-btn secondary" data-sort="file">By File</button>
+          <button class="sort-btn secondary" data-sort="complexity">By Complexity</button>
+        </div>
+      </div>
+    </div>
+    <div id="apply-progress" class="apply-progress hidden" role="status" aria-live="polite">
+      <div class="apply-progress-text" id="apply-progress-text">
+        <span class="apply-progress-spinner" id="apply-progress-spinner" aria-hidden="true"></span>
+      </div>
+      <div class="apply-progress-bar-track">
+        <div class="apply-progress-bar-fill" id="apply-progress-fill"></div>
+      </div>
     </div>
   </div>
   <div id="banner-area"></div>
-  <div class="toolbar${comments.length === 0 ? ' hidden' : ''}">
-    <label class="select-all-label">
-      <input type="checkbox" id="select-all-cb" />
-      <span id="select-all-text">Select all</span>
-    </label>
-    <button id="apply-btn" disabled>Apply Selected Fixes</button>
-    <button id="stage-commit-push-btn" class="hidden">Stage, Commit &amp; Push</button>
-    <div class="group-sort-row">
-      <span class="controls-label">Group:</span>
-      <div class="btn-group">
-        <button class="group-btn secondary active" data-group="none">None</button>
-        <button class="group-btn secondary" data-group="file">By File</button>
-        <button class="group-btn secondary" data-group="type">By Type</button>
-      </div>
-      <span class="controls-label">Sort:</span>
-      <div class="btn-group">
-        <button class="sort-btn secondary active" data-sort="default">Default</button>
-        <button class="sort-btn secondary" data-sort="file">By File</button>
-        <button class="sort-btn secondary" data-sort="complexity">By Complexity</button>
-      </div>
-    </div>
-  </div>
-  <div id="apply-progress" class="apply-progress hidden" role="status" aria-live="polite">
-    <div class="apply-progress-text" id="apply-progress-text">
-      <span class="apply-progress-spinner" id="apply-progress-spinner" aria-hidden="true"></span>
-    </div>
-    <div class="apply-progress-bar-track">
-      <div class="apply-progress-bar-fill" id="apply-progress-fill"></div>
-    </div>
-  </div>
   <div id="git-notice" class="git-notice hidden"></div>
   <div class="comment-list" id="comment-list">
     ${cardsHtml}
