@@ -37,7 +37,8 @@ interface GitHubPrComment {
 
 const COPILOT_BOT_LOGIN = 'copilot-pull-request-reviewer[bot]';
 
-// Additional known aliases — GitHub has used different login names across regions/tenants
+// Known Copilot bot login names.
+// See https://docs.github.com/en/copilot for the authoritative list of GitHub Copilot bot accounts.
 const COPILOT_BOT_LOGINS = new Set([
   'copilot-pull-request-reviewer[bot]',
   'github-copilot[bot]',
@@ -46,12 +47,17 @@ const COPILOT_BOT_LOGINS = new Set([
   'copilot',
 ]);
 
-function isCopilotBot(login: string): boolean {
+/**
+ * Returns true if `login` is a known Copilot bot account or appears in the
+ * user-supplied `additionalLogins` list. The broad regex fallback has been
+ * intentionally removed to prevent trust-bypass via accounts like "mycopilot".
+ */
+function isCopilotBot(login: string, additionalLogins: readonly string[] = []): boolean {
   if (COPILOT_BOT_LOGINS.has(login)) {
     return true;
   }
-  // Broader pattern match in case GitHub rolls out a new alias
-  return /copilot/i.test(login);
+  // Check user-configured additional bot logins (explicit allowlist only — no regex)
+  return additionalLogins.includes(login);
 }
 
 async function fetchWithRetry(url: string, options: RequestInit): Promise<Response> {
@@ -127,7 +133,8 @@ export async function fetchCopilotComments(
   owner: string,
   repo: string,
   pullNumber: number,
-  outputChannel?: { appendLine(value: string): void }
+  outputChannel?: { appendLine(value: string): void },
+  additionalBotLogins?: readonly string[]
 ): Promise<{ comments: ReviewComment[]; outdatedCount: number }> {
   const all: ReviewComment[] = [];
   let page = 1;
@@ -140,7 +147,7 @@ export async function fetchCopilotComments(
 
     for (const c of items) {
       outputChannel?.appendLine(`[githubApi] comment id=${c.id} user="${c.user.login}" path="${c.path}"`);
-      if (!isCopilotBot(c.user.login)) {
+      if (!isCopilotBot(c.user.login, additionalBotLogins)) {
         continue;
       }
       if (c.subject_type === 'line' && c.position === null) {
@@ -169,7 +176,7 @@ export async function fetchCopilotComments(
   return { comments: all, outdatedCount };
 }
 
-// ─── Fetch PR metadata ────────────────────────────────────────────────────────
+// ─── Fetch PR details (state + metadata in one request) ──────────────────────
 
 interface GitHubPrApiResponse {
   state: string;
@@ -179,12 +186,21 @@ interface GitHubPrApiResponse {
   changed_files: number;
 }
 
-export async function fetchPrMetadata(
+export interface PrDetails extends PrMetadata {
+  state: string;
+  merged: boolean;
+}
+
+/**
+ * Fetches PR state and metadata in a single HTTP request, reducing token exposure
+ * from the duplicate calls previously made by fetchPrState and fetchPrMetadata.
+ */
+export async function fetchPrDetails(
   token: string,
   owner: string,
   repo: string,
   pullNumber: number
-): Promise<PrMetadata> {
+): Promise<PrDetails> {
   const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}`;
   let response: Response;
   try {
@@ -196,50 +212,30 @@ export async function fetchPrMetadata(
       },
     });
   } catch {
-    return { title: '', assignee: null, filesChangedCount: 0 };
+    return { state: 'unknown', merged: false, title: '', assignee: null, filesChangedCount: 0 };
   }
   if (!response.ok) {
-    return { title: '', assignee: null, filesChangedCount: 0 };
+    return { state: 'unknown', merged: false, title: '', assignee: null, filesChangedCount: 0 };
   }
   const data = await response.json() as GitHubPrApiResponse;
   return {
+    state: data.state ?? 'unknown',
+    merged: data.merged ?? false,
     title: data.title ?? '',
     assignee: data.assignees?.[0]?.login ?? null,
     filesChangedCount: data.changed_files ?? 0,
   };
 }
 
-// ─── Fetch PR state ───────────────────────────────────────────────────────────
-
-interface GitHubPrDetails {
-  state: string;
-  merged: boolean;
-}
-
+/** Thin wrapper kept for backward compatibility with existing tests. */
 export async function fetchPrState(
   token: string,
   owner: string,
   repo: string,
   pullNumber: number
 ): Promise<{ state: string; merged: boolean }> {
-  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}`;
-  let response: Response;
-  try {
-    response = await fetchWithRetry(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    });
-  } catch {
-    return { state: 'unknown', merged: false };
-  }
-  if (!response.ok) {
-    return { state: 'unknown', merged: false };
-  }
-  const data = await response.json() as GitHubPrDetails;
-  return { state: data.state, merged: data.merged };
+  const details = await fetchPrDetails(token, owner, repo, pullNumber);
+  return { state: details.state, merged: details.merged };
 }
 
 // ─── List open pull requests ───────────────────────────────────────────────────

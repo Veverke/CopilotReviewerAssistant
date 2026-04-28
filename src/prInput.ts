@@ -10,15 +10,21 @@ export interface PrCoordinates {
 const PR_URL_PATTERN = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/;
 
 export async function promptForPrUrl(): Promise<string | undefined> {
-  const clip = await vscode.env.clipboard.readText();
-  const isGhPrUrl = PR_URL_PATTERN.test(clip.trim());
+  const config = vscode.workspace.getConfiguration('copilotReviewer');
+  const preFill: boolean = config.get<boolean>('preFillFromClipboard') ?? false;
+
+  let clipValue: string | undefined;
+  if (preFill) {
+    const clip = await vscode.env.clipboard.readText();
+    clipValue = PR_URL_PATTERN.test(clip.trim()) ? clip.trim() : undefined;
+  }
 
   return vscode.window.showInputBox({
     title: 'Copilot Reviewer Assistant',
     prompt: 'Enter the GitHub Pull Request URL',
     placeHolder: 'https://github.com/owner/repo/pull/123',
     ignoreFocusOut: true,
-    value: isGhPrUrl ? clip.trim() : undefined,
+    value: clipValue,
   });
 }
 
@@ -27,7 +33,11 @@ export function parsePrUrl(url: string): PrCoordinates {
   if (!match) {
     throw new Error(`Invalid GitHub PR URL: "${url}". Expected format: https://github.com/owner/repo/pull/123`);
   }
-  return { owner: match[1], repo: match[2], pullNumber: parseInt(match[3], 10) };
+  const pullNumber = parseInt(match[3], 10);
+  if (pullNumber <= 0 || pullNumber > 2_147_483_647) {
+    throw new Error(`Invalid pull request number: ${match[3]}. Must be between 1 and 2147483647.`);
+  }
+  return { owner: match[1], repo: match[2], pullNumber };
 }
 
 export async function pickFromOpenPrs(
