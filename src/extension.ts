@@ -1,14 +1,40 @@
 // The module 'vscode' contains the VS Code extensibility API
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
-import { getGitHubToken } from './auth';
+import { getGitHubToken, storePat, clearPat } from './auth';
 import { pickFromOpenPrs } from './prInput';
 import { fetchCopilotComments, fetchOpenPullRequests, fetchPrState, fetchPrMetadata, postReplyComment, resolveReviewThread } from './githubApi';
 import type { PrMetadata } from './githubApi';
 import { generateAllWorkPlans } from './workPlanGenerator';
+import { getSelectedModelName, selectModel } from './modelSelector';
 import { ReviewPanel } from './reviewPanel';
 import { applyFix, resolveWorkspaceFile, DoneFixResult } from './fixApplier';
 import { stageFiles, commitChanges, pushChanges, getRemoteOwnerRepo, buildProject } from './gitHelper';
+
+function isAccessError(message: string): boolean {
+	return /not found|access denied|authentication failed/i.test(message);
+}
+
+async function promptAndStorePat(secrets: vscode.SecretStorage, errorMessage: string): Promise<string | undefined> {
+	const action = await vscode.window.showErrorMessage(
+		`${errorMessage}\n\nIf this repo belongs to a different GitHub account, provide a Personal Access Token (PAT) from that account to continue.`,
+		'Enter PAT'
+	);
+	if (action !== 'Enter PAT') {
+		return undefined;
+	}
+	const pat = await vscode.window.showInputBox({
+		title: 'GitHub Personal Access Token',
+		prompt: 'Paste your GitHub PAT (requires repo scope for private repos). It will be stored securely.',
+		password: true,
+		ignorefocusOut: true,
+	} as vscode.InputBoxOptions);
+	if (!pat?.trim()) {
+		return undefined;
+	}
+	await storePat(secrets, pat.trim());
+	return pat.trim();
+}
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
@@ -20,10 +46,16 @@ export function activate(context: vscode.ExtensionContext) {
 	// The command has been defined in the package.json file
 	// Now provide the implementation of the command with registerCommand
 	// The commandId parameter must match the command field in package.json
+	const clearPatCommand = vscode.commands.registerCommand('copilotReviewer.clearPat', async () => {
+		await clearPat(context.secrets);
+		vscode.window.showInformationMessage('Stored GitHub PAT has been cleared. The VS Code account will be used on the next run.');
+	});
+	context.subscriptions.push(clearPatCommand);
+
 	const disposable = vscode.commands.registerCommand('copilotReviewer.openPanel', async () => {
 		let token: string;
 		try {
-			token = await getGitHubToken();
+			token = await getGitHubToken(context.secrets);
 		} catch (err: unknown) {
 			const message = err instanceof Error ? err.message : 'An unknown error occurred during authentication.';
 			vscode.window.showErrorMessage(message);
@@ -42,14 +74,31 @@ export function activate(context: vscode.ExtensionContext) {
 		let openPrs: import('./githubApi').OpenPr[] = [];
 		try {
 			openPrs = await fetchOpenPullRequests(token, repoCoords.owner, repoCoords.repo);
-		} catch {
-			openPrs = [];
+		} catch (err: unknown) {
+			const errMsg = err instanceof Error ? err.message : '';
+			if (isAccessError(errMsg)) {
+				const newPat = await promptAndStorePat(context.secrets, errMsg);
+				if (newPat) {
+					token = newPat;
+					try {
+						openPrs = await fetchOpenPullRequests(token, repoCoords.owner, repoCoords.repo);
+					} catch {
+						openPrs = [];
+					}
+				}
+				// whether PAT was entered or not, fall through to manual URL entry
+			}
+			// non-access errors also fall through silently
 		}
 
 		const prCoordinates = await pickFromOpenPrs(openPrs, repoCoords.owner, repoCoords.repo);
 		if (!prCoordinates) {
 			return;
 		}
+
+		// Select the model before opening the panel so the QuickPick appears as
+		// part of the command input flow, not after the loading screen is shown.
+		await selectModel();
 
 		const rawUrl = `https://github.com/${prCoordinates.owner}/${prCoordinates.repo}/pull/${prCoordinates.pullNumber}`;
 
@@ -61,22 +110,22 @@ export function activate(context: vscode.ExtensionContext) {
 		let prStateResult: { state: string; merged: boolean } | undefined;
 		let prMeta: PrMetadata | undefined;
 
-		try {
+		async function loadPrData(tok: string, coords: import('./prInput').PrCoordinates): Promise<void> {
 			await vscode.window.withProgress(
 				{ location: vscode.ProgressLocation.Window, title: 'Fetching PR data…', cancellable: false },
 				async () => {
 					try {
 						outputChannel.show(true);
-						fetchResult = await fetchCopilotComments(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber, outputChannel);
+						fetchResult = await fetchCopilotComments(tok, coords.owner, coords.repo, coords.pullNumber, outputChannel);
 					} catch (err: unknown) {
 						const errMsg = err instanceof Error ? err.message : '';
 						if (errMsg.includes('authentication failed')) {
 							try {
-								token = await getGitHubToken();
+								tok = await getGitHubToken(context.secrets);
 							} catch {
 								throw err;
 							}
-							fetchResult = await fetchCopilotComments(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber, outputChannel);
+							fetchResult = await fetchCopilotComments(tok, coords.owner, coords.repo, coords.pullNumber, outputChannel);
 						} else {
 							throw err;
 						}
@@ -84,11 +133,18 @@ export function activate(context: vscode.ExtensionContext) {
 
 					const { comments } = fetchResult!;
 
-					[annotated, prStateResult, prMeta] = await Promise.all([
-						generateAllWorkPlans(comments),
-						fetchPrState(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber),
-						fetchPrMetadata(token, prCoordinates.owner, prCoordinates.repo, prCoordinates.pullNumber),
+					// Run metadata fetches concurrently with work plan generation
+					const [metaResults, workPlans] = await Promise.all([
+						Promise.all([
+							fetchPrState(tok, coords.owner, coords.repo, coords.pullNumber),
+							fetchPrMetadata(tok, coords.owner, coords.repo, coords.pullNumber),
+						]),
+						generateAllWorkPlans(comments, (done, total) => {
+							panel.postLoadingProgress(done, total);
+						}),
 					]);
+					[prStateResult, prMeta] = metaResults;
+					annotated = workPlans;
 
 					// Pre-flight: check which files are present in the workspace
 					for (const item of annotated) {
@@ -97,11 +153,32 @@ export function activate(context: vscode.ExtensionContext) {
 					}
 				}
 			);
+		}
+
+		try {
+			await loadPrData(token, prCoordinates);
 		} catch (err: unknown) {
 			const message = err instanceof Error ? err.message : 'An unknown error occurred while loading PR data.';
-			panel.showError(message);
-			vscode.window.showErrorMessage(message);
-			return;
+			if (isAccessError(message)) {
+				const newPat = await promptAndStorePat(context.secrets, message);
+				if (!newPat) {
+					panel.showError(message);
+					return;
+				}
+				try {
+					token = newPat;
+					await loadPrData(token, prCoordinates);
+				} catch (retryErr: unknown) {
+					const retryMsg = retryErr instanceof Error ? retryErr.message : 'An unknown error occurred while loading PR data.';
+					panel.showError(retryMsg);
+					vscode.window.showErrorMessage(retryMsg);
+					return;
+				}
+			} else {
+				panel.showError(message);
+				vscode.window.showErrorMessage(message);
+				return;
+			}
 		}
 
 		// Stores doneResults so the retry-build callback can re-use them
@@ -175,7 +252,7 @@ export function activate(context: vscode.ExtensionContext) {
 			await commitAndPush(doneResults);
 		}
 
-		panel.setContent(rawUrl, annotated!, prMeta!, (selectedIds) => {
+		panel.setContent(rawUrl, annotated!, prMeta!, getSelectedModelName(), (selectedIds) => {
 			const selected = annotated!.filter((a) => selectedIds.includes(a.comment.id));
 			void (async () => {
 				const total = selected.length;

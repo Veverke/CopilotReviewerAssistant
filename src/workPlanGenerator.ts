@@ -107,18 +107,23 @@ async function generateWorkPlanAnnotated(
   return parseComplexity(raw, comment);
 }
 
-export async function generateAllWorkPlans(comments: ReviewComment[]): Promise<AnnotatedComment[]> {
+export async function generateAllWorkPlans(
+  comments: ReviewComment[],
+  onProgress?: (completed: number, total: number) => void
+): Promise<AnnotatedComment[]> {
   const results: AnnotatedComment[] = new Array(comments.length);
+  let completed = 0;
+  const total = comments.length;
 
   for (let i = 0; i < comments.length; i += CONCURRENCY) {
     const batch = comments.slice(i, i + CONCURRENCY);
     const batchResults = await Promise.all(
       batch.map((comment) =>
-        generateWorkPlanAnnotated(comment).then(({ workPlan, complexity }) => ({
-          comment,
-          workPlan,
-          complexity,
-        }))
+        generateWorkPlanAnnotated(comment).then(({ workPlan, complexity }) => {
+          completed++;
+          onProgress?.(completed, total);
+          return { comment, workPlan, complexity };
+        })
       )
     );
     for (let j = 0; j < batchResults.length; j++) {

@@ -7,6 +7,12 @@ import * as vscode from 'vscode';
 let cachedModel: vscode.LanguageModelChat | undefined;
 
 /**
+ * In-flight selection promise — concurrent callers wait on the same promise
+ * instead of each showing their own QuickPick simultaneously.
+ */
+let selectionInProgress: Promise<vscode.LanguageModelChat | undefined> | undefined;
+
+/**
  * Returns the language model to use, honouring whatever model is active in
  * VS Code's chat window:
  *  - If only one model is installed/available, it is used automatically.
@@ -19,38 +25,58 @@ export async function selectModel(): Promise<vscode.LanguageModelChat | undefine
     return cachedModel;
   }
 
-  const models = await vscode.lm.selectChatModels({});
-
-  if (models.length === 0) {
-    return undefined;
+  // If another call is already doing selection, wait for it instead of showing a second QuickPick
+  if (selectionInProgress) {
+    return selectionInProgress;
   }
 
-  if (models.length === 1) {
-    cachedModel = models[0];
-    return cachedModel;
-  }
+  selectionInProgress = (async () => {
+    try {
+      const models = await vscode.lm.selectChatModels({});
 
-  // Multiple models available — ask the user which one to use for this session.
-  const items = models.map((m) => ({
-    label: m.name ?? m.family ?? m.id,
-    description: `${m.vendor} · ${m.family}`,
-    model: m,
-  }));
+      if (models.length === 0) {
+        return undefined;
+      }
 
-  const picked = await vscode.window.showQuickPick(items, {
-    title: 'Select a language model',
-    placeHolder: 'Choose which model to use for this review session',
-  });
+      if (models.length === 1) {
+        cachedModel = models[0];
+        return cachedModel;
+      }
 
-  if (!picked) {
-    return undefined;
-  }
+      // Multiple models available — ask the user which one to use for this session.
+      const items = models.map((m) => ({
+        label: m.name ?? m.family ?? m.id,
+        description: `${m.vendor} · ${m.family}`,
+        model: m,
+      }));
 
-  cachedModel = picked.model;
-  return cachedModel;
+      const picked = await vscode.window.showQuickPick(items, {
+        title: 'Select a language model',
+        placeHolder: 'Choose which model to use for this review session',
+      });
+
+      if (!picked) {
+        return undefined;
+      }
+
+      cachedModel = picked.model;
+      return cachedModel;
+    } finally {
+      selectionInProgress = undefined;
+    }
+  })();
+
+  return selectionInProgress;
 }
 
 /** Clear the cached model (e.g. for testing or when the user wants to re-select). */
 export function clearModelCache(): void {
   cachedModel = undefined;
+  selectionInProgress = undefined;
+}
+
+/** Returns the display name of the currently cached model, or undefined if none selected yet. */
+export function getSelectedModelName(): string | undefined {
+  if (!cachedModel) { return undefined; }
+  return cachedModel.name ?? cachedModel.family ?? cachedModel.id;
 }

@@ -271,12 +271,24 @@ export async function fetchOpenPullRequests(
         'X-GitHub-Api-Version': '2022-11-28',
       },
     });
-  } catch {
-    return [];
+  } catch (err: unknown) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Network error while contacting GitHub: ${detail}`);
+  }
+
+  if (response.status === 401) {
+    throw new Error('GitHub authentication failed. Please sign in again.');
+  }
+  if (response.status === 403) {
+    throw new Error('Access denied. Ensure your GitHub account has access to this repository.');
+  }
+  if (response.status === 404) {
+    throw new Error('Repository not found: check the owner/repo and that you have access.');
   }
   if (!response.ok) {
-    return [];
+    throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
   }
+
   const items = await response.json() as GitHubPrListItem[];
   return items.map((pr) => ({
     pullNumber: pr.number,

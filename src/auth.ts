@@ -1,6 +1,13 @@
 import * as vscode from 'vscode';
 
-export async function getGitHubToken(): Promise<string> {
+const SECRET_KEY = 'copilotReviewer.githubPat';
+
+export async function getGitHubToken(secrets: vscode.SecretStorage): Promise<string> {
+  const pat = (await secrets.get(SECRET_KEY))?.trim();
+  if (pat) {
+    return pat;
+  }
+
   const session = await vscode.authentication.getSession(
     'github',
     ['repo'],
@@ -16,4 +23,12 @@ export async function getGitHubToken(): Promise<string> {
   }
 
   return session.accessToken;
+}
+
+export async function storePat(secrets: vscode.SecretStorage, pat: string): Promise<void> {
+  await secrets.store(SECRET_KEY, pat);
+}
+
+export async function clearPat(secrets: vscode.SecretStorage): Promise<void> {
+  await secrets.delete(SECRET_KEY);
 }

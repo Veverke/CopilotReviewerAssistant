@@ -21,6 +21,13 @@ h1 {
   letter-spacing: -0.01em;
 }
 
+.sticky-top {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background-color: var(--vscode-editor-background);
+}
+
 .pr-header {
   border: 1px solid var(--vscode-panel-border);
   border-left: 3px solid var(--vscode-focusBorder);
@@ -59,6 +66,16 @@ h1 {
   color: var(--vscode-foreground);
 }
 
+.pr-url-link {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.pr-url-link:hover {
+  text-decoration: underline;
+}
+
 .pr-header-pills {
   display: flex;
   flex-wrap: wrap;
@@ -95,9 +112,6 @@ h1 {
 }
 
 .toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 10;
   background-color: var(--vscode-editor-background);
   display: flex;
   align-items: center;
@@ -519,15 +533,12 @@ a:focus-visible {
 }
 
 .apply-progress {
-  position: sticky;
-  top: 0;
-  z-index: 9;
   background-color: var(--vscode-editorWidget-background);
   border: 1px solid var(--vscode-focusBorder);
   border-radius: 6px;
   padding: 10px 14px 8px;
   margin-top: 10px;
-  margin-bottom: 12px;
+  margin-bottom: 4px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
 }
 
@@ -757,6 +768,28 @@ a:focus-visible {
 .loading-message {
   font-size: 0.95em;
   color: var(--vscode-descriptionForeground);
+}
+
+.loading-progress-track {
+  width: 240px;
+  height: 6px;
+  background-color: var(--vscode-widget-border, rgba(128,128,128,0.3));
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.loading-progress-fill {
+  height: 100%;
+  width: 0%;
+  background-color: var(--vscode-focusBorder, #007acc);
+  border-radius: 3px;
+  transition: width 0.2s ease;
+}
+
+.loading-progress-label {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  min-height: 1.2em;
 }
 
 .error-message {
