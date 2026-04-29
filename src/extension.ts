@@ -10,6 +10,7 @@ import { getSelectedModelName, selectModel } from './modelSelector';
 import { ReviewPanel } from './reviewPanel';
 import { applyFix, resolveWorkspaceFile, DoneFixResult } from './fixApplier';
 import { stageFiles, commitChanges, pushChanges, getRemoteOwnerRepo, buildProject, detectBuildCommand } from './gitHelper';
+import { warnIfBranchMismatch } from './workspaceValidator';
 
 function isAccessError(message: string): boolean {
 	return /not found|access denied|authentication failed/i.test(message);
@@ -98,7 +99,10 @@ export function activate(context: vscode.ExtensionContext) {
 
 		// Select the model before opening the panel so the QuickPick appears as
 		// part of the command input flow, not after the loading screen is shown.
-		await selectModel();
+		await vscode.window.withProgress(
+			{ location: vscode.ProgressLocation.Window, title: 'Preparing Copilot Reviewer…', cancellable: false },
+			() => selectModel()
+		);
 
 		const rawUrl = `https://github.com/${prCoordinates.owner}/${prCoordinates.repo}/pull/${prCoordinates.pullNumber}`;
 
@@ -110,12 +114,22 @@ export function activate(context: vscode.ExtensionContext) {
 		let prDetails: PrDetails | undefined;
 
 		async function loadPrData(tok: string, coords: import('./prInput').PrCoordinates): Promise<void> {
+			const additionalBotLogins: readonly string[] = vscode.workspace
+				.getConfiguration('copilotReviewer')
+				.get<string[]>('additionalBotLogins') ?? [];
+
+			// ── Phase 1: network only — spinner ends as soon as data arrives ──
 			await vscode.window.withProgress(
 				{ location: vscode.ProgressLocation.Window, title: 'Fetching PR data…', cancellable: false },
 				async () => {
-					const additionalBotLogins: readonly string[] = vscode.workspace
-						.getConfiguration('copilotReviewer')
-						.get<string[]>('additionalBotLogins') ?? [];
+					// Start PR metadata fetch immediately — independent of comments
+					const prDetailsPromise = fetchPrDetails(tok, coords.owner, coords.repo, coords.pullNumber)
+						.then((details) => {
+							// Fire branch-mismatch warning as soon as details arrive — non-blocking
+							warnIfBranchMismatch(details.headBranch, coords.repo).catch(() => {});
+							return details;
+						});
+
 					try {
 						outputChannel.show(true);
 						fetchResult = await fetchCopilotComments(tok, coords.owner, coords.repo, coords.pullNumber, outputChannel, additionalBotLogins);
@@ -127,29 +141,27 @@ export function activate(context: vscode.ExtensionContext) {
 							} catch {
 								throw err;
 							}
-						fetchResult = await fetchCopilotComments(tok, coords.owner, coords.repo, coords.pullNumber, outputChannel, additionalBotLogins);
+							fetchResult = await fetchCopilotComments(tok, coords.owner, coords.repo, coords.pullNumber, outputChannel, additionalBotLogins);
 						} else {
 							throw err;
 						}
 					}
 
-					const { comments } = fetchResult!;
-
-					// Run metadata fetches concurrently with work plan generation
-					[annotated, prDetails] = await Promise.all([
-						generateAllWorkPlans(comments, (done, total) => {
-							panel.postLoadingProgress(done, total);
-						}),
-						fetchPrDetails(tok, coords.owner, coords.repo, coords.pullNumber),
-					]);
-
-					// Pre-flight: check which files are present in the workspace
-					for (const item of annotated) {
-						const uri = await resolveWorkspaceFile(item.comment.path);
-						item.fileFound = uri !== undefined;
-					}
+					prDetails = await prDetailsPromise;
 				}
 			);
+
+			// ── Phase 2: work plan generation — progress shown in the webview panel ──
+			const { comments } = fetchResult!;
+			[annotated] = await Promise.all([
+				generateAllWorkPlans(comments, (done, total) => {
+					panel.postLoadingProgress(done, total);
+				}),
+			]);
+			for (const item of annotated) {
+				const uri = await resolveWorkspaceFile(item.comment.path);
+				item.fileFound = uri !== undefined;
+			}
 		}
 
 		try {
@@ -239,9 +251,8 @@ export function activate(context: vscode.ExtensionContext) {
 			const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 			const detectedCmd = rootPath ? detectBuildCommand(rootPath) : undefined;
 			panel.postGitStatus({ state: 'building', command: detectedCmd ?? undefined });
-			const buildResult = await buildProject();
+			const buildResult = await buildProject(outputChannel);
 			if (!buildResult.ok) {
-				outputChannel.appendLine(`[build] ${buildResult.details}`);
 				panel.postGitStatus({ state: 'build-failed', reason: buildResult.reason, details: buildResult.details });
 				return;
 			}
@@ -295,16 +306,15 @@ export function activate(context: vscode.ExtensionContext) {
 				const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 				const detectedCmd = rootPath ? detectBuildCommand(rootPath) : undefined;
 				panel.postGitStatus({ state: 'building', command: detectedCmd ?? undefined });
-				const buildResult = await buildProject();
+				const buildResult = await buildProject(outputChannel);
 				if (!buildResult.ok) {
-					outputChannel.appendLine(`[build] ${buildResult.details}`);
 					panel.postGitStatus({ state: 'build-failed', reason: buildResult.reason, details: buildResult.details });
 					return;
 				}
 				panel.postGitStatus({ state: 'build-succeeded' });
 				await commitAndPush(pendingDoneResults!);
 			})();
-		});
+		}, outputChannel);
 
 		const { outdatedCount } = fetchResult!;
 		if (outdatedCount > 0) {

@@ -1,5 +1,3 @@
-export type ReviewCommentType = 'commit-suggestion' | 'fix-with-copilot';
-
 export interface ReviewComment {
   id: number;
   path: string;
@@ -7,7 +5,6 @@ export interface ReviewComment {
   body: string;
   diffHunk: string;
   htmlUrl: string;
-  type?: ReviewCommentType;
 }
 
 export interface PrMetadata {
@@ -16,9 +13,6 @@ export interface PrMetadata {
   filesChangedCount: number;
 }
 
-function detectCommentType(body: string): ReviewCommentType {
-  return /^```suggestion/m.test(body) ? 'commit-suggestion' : 'fix-with-copilot';
-}
 
 interface GitHubPrComment {
   id: number;
@@ -146,7 +140,6 @@ export async function fetchCopilotComments(
     totalSeen += items.length;
 
     for (const c of items) {
-      outputChannel?.appendLine(`[githubApi] comment id=${c.id} user="${c.user.login}" path="${c.path}"`);
       if (!isCopilotBot(c.user.login, additionalBotLogins)) {
         continue;
       }
@@ -155,6 +148,7 @@ export async function fetchCopilotComments(
         outputChannel?.appendLine(`[githubApi] skipped outdated comment id=${c.id}`);
         continue;
       }
+      outputChannel?.appendLine(`[githubApi] id=${c.id} path="${c.path}"`);
       all.push({
         id: c.id,
         path: c.path,
@@ -162,7 +156,6 @@ export async function fetchCopilotComments(
         body: c.body,
         diffHunk: c.diff_hunk,
         htmlUrl: c.html_url,
-        type: detectCommentType(c.body),
       });
     }
 
@@ -184,11 +177,13 @@ interface GitHubPrApiResponse {
   title: string;
   assignees: Array<{ login: string }>;
   changed_files: number;
+  head: { ref: string };
 }
 
 export interface PrDetails extends PrMetadata {
   state: string;
   merged: boolean;
+  headBranch: string;
 }
 
 /**
@@ -212,10 +207,10 @@ export async function fetchPrDetails(
       },
     });
   } catch {
-    return { state: 'unknown', merged: false, title: '', assignee: null, filesChangedCount: 0 };
+    return { state: 'unknown', merged: false, title: '', assignee: null, filesChangedCount: 0, headBranch: '' };
   }
   if (!response.ok) {
-    return { state: 'unknown', merged: false, title: '', assignee: null, filesChangedCount: 0 };
+    return { state: 'unknown', merged: false, title: '', assignee: null, filesChangedCount: 0, headBranch: '' };
   }
   const data = await response.json() as GitHubPrApiResponse;
   return {
@@ -224,6 +219,7 @@ export async function fetchPrDetails(
     title: data.title ?? '',
     assignee: data.assignees?.[0]?.login ?? null,
     filesChangedCount: data.changed_files ?? 0,
+    headBranch: data.head?.ref ?? '',
   };
 }
 

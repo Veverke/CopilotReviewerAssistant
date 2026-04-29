@@ -13,13 +13,12 @@
   var settledCount = 0;  // done + failed
   var totalApplying = 0;
 
-  // ─── Grouping / sorting state ────────────────────────────────────────────────
-  var currentGroup = 'none';  // 'none' | 'file' | 'type'
-  var currentSort = 'default'; // 'default' | 'file' | 'complexity'
-  var collapsedGroups = new Set(); // tracks which group keys are collapsed
+  // ─── Grouping state ─────────────────────────────────────────────────────────────
+  var currentGroup = 'none';  // 'none' | 'file' | 'complexity'
+  var collapsedGroups = new Set();
 
-  var COMPLEXITY_ORDER = { low: 0, medium: 1, high: 2 };
-  var TYPE_LABELS = { 'fix-with-copilot': 'Fix With Copilot', 'commit-suggestion': 'Commit Suggestion' };
+  var COMPLEXITY_GROUP_ORDER = ['high', 'medium', 'low'];
+  var COMPLEXITY_GROUP_LABELS = { high: 'High', medium: 'Medium', low: 'Low' };
 
   function getAllCards() {
     return Array.from(document.querySelectorAll('.card[data-number]'));
@@ -37,64 +36,51 @@
 
     // Detach all cards and remove existing group headers
     cards.forEach(function(c) { list.removeChild(c); });
-    Array.from(list.querySelectorAll('.group-header')).forEach(function(h) { list.removeChild(h); });
-
-    // Sort
-    cards.sort(function(a, b) {
-      if (currentSort === 'file') {
-        var fa = (a.dataset.file || '').toLowerCase();
-        var fb = (b.dataset.file || '').toLowerCase();
-        if (fa < fb) { return -1; }
-        if (fa > fb) { return 1; }
-        return Number(a.dataset.number || 0) - Number(b.dataset.number || 0);
-      }
-      if (currentSort === 'complexity') {
-        var ca = COMPLEXITY_ORDER[a.dataset.complexity] ?? 0;
-        var cb = COMPLEXITY_ORDER[b.dataset.complexity] ?? 0;
-        if (ca !== cb) { return cb - ca; }
-        return Number(a.dataset.number || 0) - Number(b.dataset.number || 0);
-      }
-      // default: original order
-      return Number(a.dataset.number || 0) - Number(b.dataset.number || 0);
-    });
+    Array.from(list.querySelectorAll('.group-header')).forEach(function(el) { list.removeChild(el); });
 
     if (currentGroup === 'none') {
-      cards.forEach(function(c) { list.appendChild(c); });
+      cards.forEach(function(c) { c.style.display = ''; list.appendChild(c); });
       return;
     }
 
-    // Group cards
+    // Build groups
     var groups = {};
     var groupOrder = [];
-    cards.forEach(function(c) {
-      var key = currentGroup === 'file' ? (c.dataset.file || '') : (c.dataset.type || '');
-      if (!groups[key]) {
-        groups[key] = [];
-        groupOrder.push(key);
-      }
-      groups[key].push(c);
-    });
+
+    if (currentGroup === 'file') {
+      // Group by file path, sort groups alphabetically
+      cards.forEach(function(c) {
+        var key = c.dataset.file || '';
+        if (!groups[key]) { groups[key] = []; }
+        groups[key].push(c);
+      });
+      groupOrder = Object.keys(groups).sort(function(a, b) {
+        return a.toLowerCase().localeCompare(b.toLowerCase());
+      });
+    } else if (currentGroup === 'complexity') {
+      // Group by complexity, fixed order High → Medium → Low
+      cards.forEach(function(c) {
+        var key = c.dataset.complexity || 'low';
+        if (!groups[key]) { groups[key] = []; }
+        groups[key].push(c);
+      });
+      groupOrder = COMPLEXITY_GROUP_ORDER.filter(function(k) { return groups[k] && groups[k].length > 0; });
+    }
 
     groupOrder.forEach(function(key) {
       var isCollapsed = collapsedGroups.has(key);
       var header = document.createElement('div');
       header.className = 'group-header' + (isCollapsed ? ' collapsed' : '');
       header.dataset.groupKey = key;
-      var label = currentGroup === 'type' ? (TYPE_LABELS[key] || key) : key;
+      var label = currentGroup === 'complexity' ? (COMPLEXITY_GROUP_LABELS[key] || key) : key;
       var count = groups[key].length;
       header.innerHTML = '<span class="group-header-chevron">&#9660;</span>'
         + '<span class="group-header-label">' + escapeHtmlJs(label) + '</span>'
         + '<span class="group-header-count">' + count + '</span>';
       header.addEventListener('click', function() {
         var collapsed = header.classList.toggle('collapsed');
-        if (collapsed) {
-          collapsedGroups.add(key);
-        } else {
-          collapsedGroups.delete(key);
-        }
-        groups[key].forEach(function(c) {
-          c.style.display = collapsed ? 'none' : '';
-        });
+        if (collapsed) { collapsedGroups.add(key); } else { collapsedGroups.delete(key); }
+        groups[key].forEach(function(c) { c.style.display = collapsed ? 'none' : ''; });
       });
       list.appendChild(header);
       groups[key].forEach(function(c) {
@@ -114,22 +100,131 @@
   }
 
   // ─── Group / sort button wiring ───────────────────────────────────────────────
+  var expandCollapseBtn = document.getElementById('expand-collapse-btn');
+  var allCollapsed = false;
+
+  function updateExpandCollapseBtn() {
+    if (!expandCollapseBtn) { return; }
+    if (currentGroup === 'none') {
+      expandCollapseBtn.classList.add('hidden');
+    } else {
+      expandCollapseBtn.classList.remove('hidden');
+      expandCollapseBtn.textContent = allCollapsed ? 'Expand All' : 'Collapse All';
+    }
+  }
+
+  if (expandCollapseBtn) {
+    expandCollapseBtn.addEventListener('click', function() {
+      allCollapsed = !allCollapsed;
+      var list = document.getElementById('comment-list');
+      if (!list) { return; }
+      Array.from(list.querySelectorAll('.group-header')).forEach(function(header) {
+        var key = header.dataset.groupKey;
+        if (allCollapsed) {
+          header.classList.add('collapsed');
+          collapsedGroups.add(key);
+        } else {
+          header.classList.remove('collapsed');
+          collapsedGroups.delete(key);
+        }
+      });
+      getAllCards().forEach(function(c) {
+        if (currentGroup !== 'none') {
+          c.style.display = allCollapsed ? 'none' : '';
+        }
+      });
+      updateExpandCollapseBtn();
+    });
+  }
+
   document.querySelectorAll('.group-btn').forEach(function(btn) {
     btn.addEventListener('click', function() {
       document.querySelectorAll('.group-btn').forEach(function(b) { b.classList.remove('active'); });
       btn.classList.add('active');
       currentGroup = btn.dataset.group;
+      allCollapsed = false;
+      collapsedGroups.clear();
       renderGrouped();
+      updateExpandCollapseBtn();
     });
   });
 
-  document.querySelectorAll('.sort-btn').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      document.querySelectorAll('.sort-btn').forEach(function(b) { b.classList.remove('active'); });
-      btn.classList.add('active');
-      currentSort = btn.dataset.sort;
-      renderGrouped();
-    });
+  // ─── Copy buttons ────────────────────────────────────────────────────────────
+  document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.copy-btn');
+    if (!btn) { return; }
+    e.stopPropagation();
+
+    var type = btn.dataset.copyType;
+    var plainText = '';
+    var htmlText = '';
+
+    if (type === 'comment') {
+      var commentEl = btn.closest('.discuss-comment');
+      var bodyEl = commentEl ? commentEl.querySelector('.comment-body') : null;
+      plainText = bodyEl ? (bodyEl.textContent || '') : '';
+      htmlText = bodyEl ? ('<div>' + bodyEl.innerHTML + '</div>') : plainText;
+    } else if (type === 'workplan') {
+      var workplanEl = btn.closest('.discuss-workplan');
+      plainText = workplanEl ? (workplanEl.dataset.rawWorkplan || '') : '';
+      var workPlanContent = workplanEl ? workplanEl.querySelector('.work-plan') : null;
+      htmlText = workPlanContent ? workPlanContent.outerHTML : ('<p>' + escapeHtmlJs(plainText) + '</p>');
+    }
+
+    var orig = btn.textContent;
+    function confirmCopy() {
+      btn.textContent = '\u2713';
+      btn.classList.add('copy-btn-done');
+      setTimeout(function() { btn.textContent = orig; btn.classList.remove('copy-btn-done'); }, 1200);
+    }
+
+    try {
+      navigator.clipboard.write([
+        new ClipboardItem({
+          'text/plain': new Blob([plainText], { type: 'text/plain' }),
+          'text/html': new Blob([htmlText], { type: 'text/html' }),
+        })
+      ]).then(confirmCopy).catch(function() {
+        navigator.clipboard.writeText(plainText).then(confirmCopy).catch(function() {});
+      });
+    } catch (_) {
+      navigator.clipboard.writeText(plainText).then(confirmCopy).catch(function() {});
+    }
+  });
+
+  // ─── Discuss in Copilot Chat ─────────────────────────────────────────────────
+  document.addEventListener('click', function(e) {
+    var target = e.target;
+    // Ignore copy button clicks
+    if (target.closest && target.closest('.copy-btn')) { return; }
+
+    // Walk up to find .discuss-comment or .discuss-workplan
+    var el = target;
+    while (el && el !== document.body) {
+      if (el.classList && (el.classList.contains('discuss-comment') || el.classList.contains('discuss-workplan'))) {
+        break;
+      }
+      el = el.parentElement;
+    }
+    if (!el || el === document.body) { return; }
+
+    var card = el.closest('.card');
+    var number = card ? Number(card.dataset.number || 0) : 0;
+
+    // Visual feedback: briefly highlight the clicked element
+    el.classList.add('discuss-active');
+    setTimeout(function() { el.classList.remove('discuss-active'); }, 700);
+
+    if (el.classList.contains('discuss-comment')) {
+      // Text lives in the inner .comment-body child
+      var commentBody = el.querySelector('.comment-body');
+      var text = (commentBody ? commentBody.textContent : el.textContent) || '';
+      vscode.postMessage({ command: 'openChat', chatType: 'comment', number: number, text: text.trim() });
+    } else if (el.classList.contains('discuss-workplan')) {
+      // Raw work plan stored on the container via data-raw-workplan
+      var rawText = el.dataset.rawWorkplan || (el.querySelector('.work-plan') || el).textContent || '';
+      vscode.postMessage({ command: 'openChat', chatType: 'workplan', number: number, text: rawText.trim() });
+    }
   });
 
   // ─── Checkbox / apply wiring ─────────────────────────────────────────────────
@@ -383,7 +478,8 @@
     }
   }
 
-  // Initialise button state on load
+  // Initialise section structure and button state on load
+  renderGrouped();
   updateApplyButton();
 
   // Details expand/collapse animation

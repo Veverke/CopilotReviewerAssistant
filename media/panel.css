@@ -315,6 +315,64 @@ details[open] summary::before {
   margin-top: 6px;
 }
 
+/* ─── Click-to-discuss ───────────────────────────────────────────────────── */
+
+.discuss-comment,
+.discuss-workplan {
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background-color 0.12s ease, outline 0.12s ease;
+  position: relative;
+}
+
+/* details-body is the discuss-comment; give it a bit of padding so the hover area is generous */
+.discuss-comment {
+  padding: 4px 4px 4px 0;
+}
+
+.discuss-workplan {
+  margin-top: 8px;
+  padding: 4px;
+}
+
+.discuss-comment:hover,
+.discuss-workplan:hover {
+  background-color: var(--vscode-list-hoverBackground);
+  outline: 1px dashed var(--vscode-focusBorder);
+}
+
+.discuss-comment.discuss-active,
+.discuss-workplan.discuss-active {
+  background-color: var(--vscode-list-activeSelectionBackground, rgba(0,122,204,0.15));
+  outline: 1px solid var(--vscode-focusBorder);
+  transition: background-color 0.6s ease;
+}
+
+.discuss-comment::after,
+.discuss-workplan::after {
+  content: '💬 Discuss in Copilot Chat';
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 4px);
+  right: 0;
+  font-size: 0.75em;
+  font-style: normal;
+  white-space: nowrap;
+  background-color: var(--vscode-editorWidget-background);
+  color: var(--vscode-descriptionForeground);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  padding: 2px 7px;
+  pointer-events: none;
+  z-index: 20;
+}
+
+.discuss-comment:hover::after,
+.discuss-workplan:hover::after {
+  display: block;
+}
+
+
 .work-plan ol {
   padding: 8px 8px 8px 2em;
   margin: 0;
@@ -336,6 +394,13 @@ details[open] summary::before {
   margin: 0;
 }
 
+.work-plan-opted-out {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+  margin-top: 4px;
+}
+
 .work-plan-label {
   font-size: 0.8em;
   font-weight: 600;
@@ -345,7 +410,40 @@ details[open] summary::before {
   margin-bottom: 4px;
   padding-left: 7px;
   border-left: 2px solid var(--vscode-focusBorder);
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
+
+/* ─── Copy button ───────────────────────────────────────────────────────── */
+.copy-btn {
+  background: none;
+  border: none;
+  padding: 1px 3px;
+  margin: 0;
+  cursor: pointer;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.4;
+  border-radius: 3px;
+  line-height: 1;
+  transition: opacity 0.1s;
+  flex-shrink: 0;
+}
+.copy-btn:hover {
+  opacity: 1;
+  background-color: var(--vscode-toolbar-hoverBackground);
+}
+.copy-btn-done {
+  opacity: 1;
+  color: var(--vscode-terminal-ansiGreen);
+}
+/* Show copy btn on comment hover */
+.details-body .copy-btn {
+  float: right;
+  margin-top: 2px;
+}
+
 
 .empty-state {
   text-align: center;
@@ -652,6 +750,72 @@ a:focus-visible {
   padding-top: 8px;
   border-top: 1px solid var(--vscode-panel-border);
   margin-top: 6px;
+}
+
+.controls-separator {
+  width: 1px;
+  height: 16px;
+  background-color: var(--vscode-panel-border);
+  flex-shrink: 0;
+  margin: 0 2px;
+}
+
+.filter-check-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  font-size: 0.8em;
+  color: var(--vscode-foreground);
+  user-select: none;
+  white-space: nowrap;
+}
+
+.filter-check-label input[type="checkbox"] {
+  accent-color: var(--vscode-focusBorder);
+  width: 13px;
+  height: 13px;
+  cursor: pointer;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+/* ─── Type section headers (Fix With Copilot / Commit Suggestion) ─────────── */
+
+.card.type-filtered {
+  display: none !important;
+}
+
+.type-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 4px 6px;
+  border-bottom: 2px solid var(--vscode-focusBorder, #007acc);
+  margin-top: 20px;
+  margin-bottom: 8px;
+}
+
+.type-section-header:first-child {
+  margin-top: 4px;
+}
+
+.type-section-title {
+  font-size: 0.85em;
+  font-weight: 700;
+  color: var(--vscode-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.section-notice {
+  font-size: 0.82em;
+  color: var(--vscode-descriptionForeground);
+  background-color: var(--vscode-inputValidation-infoBackground, rgba(75, 165, 255, 0.1));
+  border: 1px solid var(--vscode-inputValidation-infoBorder, rgba(75, 165, 255, 0.3));
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
 }
 
 .controls-label {
