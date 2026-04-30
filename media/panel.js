@@ -232,17 +232,27 @@
   if (exportBtn) {
     exportBtn.addEventListener('click', function() {
       var cards = getAllCards();
-      var sections = [];
+      var items = [];
       cards.forEach(function(card) {
         var commentBodyEl = card.querySelector('.comment-body');
         var issueText = commentBodyEl ? (commentBodyEl.textContent || '').trim() : '';
         var workplanEl = card.querySelector('.discuss-workplan');
         var workplanText = workplanEl ? (workplanEl.dataset.rawWorkplan || '').trim() : '';
-        var num = card.dataset.number || (sections.length + 1);
-        sections.push('Issue ' + num + ': ' + issueText + '\n\nWork-plan: ' + workplanText);
+        var workPlanSteps = workplanText
+          .split('\n')
+          .map(function(l) { return l.trim(); })
+          .filter(function(l) { return /^\d+\.\s+/.test(l); })
+          .map(function(l) { return l.replace(/^\d+\.\s+/, ''); });
+        if (workPlanSteps.length === 0 && workplanText) { workPlanSteps = [workplanText]; }
+        items.push({
+          number: Number(card.dataset.number) || (items.length + 1),
+          file: card.dataset.file || '',
+          complexity: card.dataset.complexity || '',
+          issue: issueText,
+          workPlan: workPlanSteps,
+        });
       });
-      var separator = '\n\n=========================================\n\n';
-      var content = sections.join(separator);
+      var content = JSON.stringify({ reviews: items }, null, 2);
       vscode.postMessage({ command: 'exportReviews', content: content });
     });
   }

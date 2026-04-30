@@ -142,8 +142,8 @@ export class ReviewPanel {
         } else if (message.command === 'exportReviews' && message.content) {
           void (async () => {
             const uri = await vscode.window.showSaveDialog({
-              defaultUri: vscode.Uri.file('review-export.md'),
-              filters: { 'Markdown': ['md'] },
+              defaultUri: vscode.Uri.file('review-export.json'),
+              filters: { 'JSON': ['json'] },
               title: 'Export Review Items',
             });
             if (!uri) { return; }
