@@ -12,11 +12,13 @@ export class ReviewPanel {
   private readonly _panel: vscode.WebviewPanel;
   private readonly _mediaUri: vscode.Uri;
   private _disposables: vscode.Disposable[] = [];
+  private _outputChannel: vscode.OutputChannel | undefined;
 
   private _onApplyFixes: ((selectedIds: number[]) => void) | undefined;
   private _onStageCommitAndPush: ((doneResults: DoneFixResult[]) => void) | undefined;
   private _onRetryFix: ((id: number) => void) | undefined;
   private _onRetryBuild: (() => void) | undefined;
+  private _onRegenerateWorkPlan: ((id: number) => void) | undefined;
   private _doneResults: DoneFixResult[] = [];
   private _prMeta: PrMetadata = { title: '', assignee: null, filesChangedCount: 0 };
 
@@ -128,7 +130,7 @@ export class ReviewPanel {
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
     this._panel.webview.onDidReceiveMessage(
-      (message: { command: string; selectedIds?: number[]; id?: number }) => {
+      (message: { command: string; selectedIds?: number[]; id?: number; chatType?: string; number?: number; text?: string; content?: string }) => {
         if (message.command === 'applyFixes' && message.selectedIds) {
           this._onApplyFixes?.(message.selectedIds);
         } else if (message.command === 'stageCommitAndPush') {
@@ -137,6 +139,55 @@ export class ReviewPanel {
           this._onRetryFix?.(message.id);
         } else if (message.command === 'retryBuild') {
           this._onRetryBuild?.();
+        } else if (message.command === 'exportReviews' && message.content) {
+          void (async () => {
+            const uri = await vscode.window.showSaveDialog({
+              defaultUri: vscode.Uri.file('review-export.md'),
+              filters: { 'Markdown': ['md'] },
+              title: 'Export Review Items',
+            });
+            if (!uri) { return; }
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(message.content as string, 'utf-8'));
+            vscode.window.showInformationMessage('Review items exported successfully.');
+          })();
+        } else if (message.command === 'regenerateWorkPlan' && message.id !== undefined) {
+          this._onRegenerateWorkPlan?.(message.id);
+        } else if (message.command === 'openChat' && message.text) {
+          this._outputChannel?.appendLine(`[openChat] type=${message.chatType} #${message.number} text-start="${message.text.slice(0, 80)}"`);
+          const prompt = message.chatType === 'comment'
+            ? `You left the following review comment:\n${message.text}\n\nI want to further discuss it.\n`
+            : `For review comment #${message.number ?? ''} you came up with the following work plan:\n${message.text}\n\nI want to further discuss it.\n`;
+          void (async () => {
+            // Always write to clipboard so user has it regardless
+            try { await vscode.env.clipboard.writeText(prompt); } catch { /* ignore */ }
+
+            // Try to open chat with prompt pre-filled (isPartialQuery = fill input but don't send)
+            let prefilled = false;
+            try {
+              await vscode.commands.executeCommand('workbench.action.chat.open', {
+                query: prompt,
+                isPartialQuery: true,
+              });
+              prefilled = true;
+              this._outputChannel?.appendLine('[openChat] Chat opened with pre-filled prompt.');
+            } catch (err1: unknown) {
+              this._outputChannel?.appendLine(`[openChat] pre-fill failed: ${err1 instanceof Error ? err1.message : String(err1)} — falling back to open + clipboard`);
+              try {
+                await vscode.commands.executeCommand('workbench.action.chat.open');
+              } catch {
+                try {
+                  await vscode.commands.executeCommand('workbench.panel.chat.view.copilot.focus');
+                } catch { /* ignore */ }
+              }
+            }
+
+            if (!prefilled) {
+              vscode.window.showInformationMessage(
+                'Prompt copied to clipboard \u2014 paste it into Copilot Chat (Ctrl+V / Cmd+V).',
+                { modal: false }
+              );
+            }
+          })();
         }
       },
       null,
@@ -152,13 +203,17 @@ export class ReviewPanel {
     onApplyFixes: (selectedIds: number[]) => void,
     onStageCommitAndPush: (doneResults: DoneFixResult[]) => void,
     onRetryFix: (id: number) => void,
-    onRetryBuild: () => void
+    onRetryBuild: () => void,
+    onRegenerateWorkPlan: (id: number) => void,
+    outputChannel?: vscode.OutputChannel
   ): void {
     this._prMeta = prMeta;
     this._onApplyFixes = onApplyFixes;
     this._onStageCommitAndPush = onStageCommitAndPush;
     this._onRetryFix = onRetryFix;
     this._onRetryBuild = onRetryBuild;
+    this._onRegenerateWorkPlan = onRegenerateWorkPlan;
+    this._outputChannel = outputChannel;
     this._doneResults = [];
     this._update(prUrl, comments, modelName);
   }
@@ -196,6 +251,9 @@ export class ReviewPanel {
     <div class="pr-header-meta">
       <span class="pr-meta-item"><span class="pr-meta-key">Repo:</span> ${escapeHtml(repoLabel)} ${escapeHtml(prNumber)}</span>
       <span class="pr-meta-item"><span class="pr-meta-key">URL:</span> <a class="pr-url-link" href="${safeGithubUrl(prUrl)}" target="_blank">${escapeHtml(prUrl)}</a></span>
+    </div>
+  </div>
+  <div class="loading-state">
     <div class="loading-spinner" role="status" aria-label="Loading PR data"></div>
     <div class="loading-message" id="loading-message">Fetching PR data&hellip;</div>
     <div class="loading-progress-track" id="loading-progress-track" style="display:none">
@@ -261,13 +319,9 @@ export class ReviewPanel {
     const repoLabel = urlMatch ? `${urlMatch[1]}/${urlMatch[2]}` : prUrl;
     const prNumber = urlMatch ? `#${urlMatch[3]}` : '';
 
-    // Recommendation type counts
-    const fixWithCopilotCount = comments.filter(
-      ({ comment }) => (comment.type ?? 'fix-with-copilot') === 'fix-with-copilot'
-    ).length;
-    const commitSuggestionCount = comments.length - fixWithCopilotCount;
+    const sortedComments = comments;
 
-    const cardsHtml = comments.length === 0
+    const cardsHtml = sortedComments.length === 0
       ? `<div class="empty-state">
         <svg class="empty-icon" width="48" height="48" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor" aria-hidden="true">
           <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zM0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm11.354-2.646a.5.5 0 0 0-.708-.708L7 8.293 5.354 6.646a.5.5 0 1 0-.708.708l2 2a.5.5 0 0 0 .708 0l4-4z"/>
@@ -275,18 +329,17 @@ export class ReviewPanel {
         <p>No pending Copilot review recommendations found for this PR.</p>
         <p class="empty-sub">Try a PR that has been reviewed by GitHub Copilot.</p>
       </div>`
-      : comments.map(({ comment, workPlan, fileFound, complexity }, index) => {
+      : sortedComments.map(({ comment, workPlan, fileFound, complexity }, index) => {
         const fileNotFound = fileFound === false;
         const linkHref = safeGithubUrl(comment.htmlUrl);
         const linkHtml = linkHref
           ? `<a class="comment-link" href="${linkHref}" target="_blank">View on GitHub ↗</a>`
           : '';
-        const commentType = comment.type ?? 'fix-with-copilot';
         const complexityLevel = complexity ?? 'low';
         const complexityLabel = complexityLevel === 'low' ? 'LOW' : complexityLevel === 'medium' ? 'MED' : 'HIGH';
         const number = index + 1;
         return `
-        <div class="card" data-id="${comment.id}" data-file="${escapeHtml(comment.path)}" data-type="${commentType}" data-complexity="${complexityLevel}" data-number="${number}">
+        <div class="card" data-id="${comment.id}" data-file="${escapeHtml(comment.path)}" data-complexity="${complexityLevel}" data-number="${number}">
           <input
             type="checkbox"
             class="comment-checkbox"
@@ -305,12 +358,15 @@ export class ReviewPanel {
             </div>
             <details open>
               <summary>Reviewer comment</summary>
-              <div class="details-body">
+              <div class="details-body discuss-comment" title="Click to discuss this comment in Copilot Chat">
+                <button class="copy-btn" data-copy-type="comment" title="Copy comment text" aria-label="Copy comment text">&#128203;</button>
                 <div class="comment-body">${escapeHtml(comment.body)}</div>
               </div>
             </details>
-            <div class="work-plan-label">Work plan</div>
-            <div class="work-plan">${workPlanToHtml(workPlan)}</div>
+            <div class="discuss-workplan work-plan-section" data-raw-workplan="${escapeHtml(workPlan)}" title="Click to discuss this work plan in Copilot Chat">
+              <div class="work-plan-label">Work plan <button class="copy-btn" data-copy-type="workplan" title="Copy work plan text" aria-label="Copy work plan text">&#128203;</button><button class="regen-btn" data-id="${comment.id}" title="Regenerate work plan from scratch" aria-label="Regenerate work plan">&#8635;</button></div>
+              <div class="work-plan">${workPlanToHtml(workPlan)}</div>
+            </div>
           </div>
         </div>`;
       }).join('\n');
@@ -339,8 +395,6 @@ export class ReviewPanel {
       </div>
       <div class="pr-header-pills">
         <span class="pill pill-total">${comments.length} total</span>
-        <span class="pill pill-fix-copilot">${fixWithCopilotCount} Fix With Copilot</span>
-        <span class="pill pill-commit-suggestion">${commitSuggestionCount} Commit Suggestion</span>
       </div>
     </div>
     <div class="toolbar${comments.length === 0 ? ' hidden' : ''}">
@@ -349,20 +403,16 @@ export class ReviewPanel {
         <span id="select-all-text">Select all</span>
       </label>
       <button id="apply-btn" disabled>Apply Selected Fixes</button>
+      <button id="export-btn" class="secondary">Export</button>
       <button id="stage-commit-push-btn" class="hidden">Stage, Commit &amp; Push</button>
       <div class="group-sort-row">
-        <span class="controls-label">Group:</span>
+        <span class="controls-label">Group by:</span>
         <div class="btn-group">
           <button class="group-btn secondary active" data-group="none">None</button>
-          <button class="group-btn secondary" data-group="file">By File</button>
-          <button class="group-btn secondary" data-group="type">By Type</button>
+          <button class="group-btn secondary" data-group="file">File</button>
+          <button class="group-btn secondary" data-group="complexity">Complexity</button>
         </div>
-        <span class="controls-label">Sort:</span>
-        <div class="btn-group">
-          <button class="sort-btn secondary active" data-sort="default">Default</button>
-          <button class="sort-btn secondary" data-sort="file">By File</button>
-          <button class="sort-btn secondary" data-sort="complexity">By Complexity</button>
-        </div>
+        <button id="expand-collapse-btn" class="secondary hidden">Collapse All</button>
       </div>
     </div>
     <div id="apply-progress" class="apply-progress hidden" role="status" aria-live="polite">
@@ -406,6 +456,16 @@ export class ReviewPanel {
 
   public postGitStatus(status: GitStatus): void {
     void this._panel.webview.postMessage({ command: 'gitStatus', status });
+  }
+
+  public postWorkPlanUpdated(id: number, workPlan: string, complexity: string): void {
+    void this._panel.webview.postMessage({
+      command: 'workPlanUpdated',
+      id,
+      workPlan,
+      workPlanHtml: workPlanToHtml(workPlan),
+      complexity,
+    });
   }
 
   public dispose(): void {

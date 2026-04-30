@@ -543,12 +543,14 @@ describe('fetchPrDetails', () => {
       makeResponse({
         state: 'open', merged: false,
         title: 'My PR', assignees: [{ login: 'alice' }], changed_files: 5,
+        head: { ref: 'feature/my-branch' },
       })
     );
     const result = await fetchPrDetails('tok', 'o', 'r', 1);
     expect(result).toEqual({
       state: 'open', merged: false,
       title: 'My PR', assignee: 'alice', filesChangedCount: 5,
+      headBranch: 'feature/my-branch',
     });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -562,7 +564,7 @@ describe('fetchPrDetails', () => {
       const resultPromise = fetchPrDetails('tok', 'o', 'r', 1);
       await vi.advanceTimersByTimeAsync(1100);
       const result = await resultPromise;
-      expect(result).toEqual({ state: 'unknown', merged: false, title: '', assignee: null, filesChangedCount: 0 });
+      expect(result).toEqual({ state: 'unknown', merged: false, title: '', assignee: null, filesChangedCount: 0, headBranch: '' });
     } finally {
       vi.useRealTimers();
     }
@@ -571,7 +573,7 @@ describe('fetchPrDetails', () => {
   it('returns safe defaults on non-ok HTTP response', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(makeResponse({}, 404));
     const result = await fetchPrDetails('tok', 'o', 'r', 1);
-    expect(result).toEqual({ state: 'unknown', merged: false, title: '', assignee: null, filesChangedCount: 0 });
+    expect(result).toEqual({ state: 'unknown', merged: false, title: '', assignee: null, filesChangedCount: 0, headBranch: '' });
   });
 
   it('fetchPrState still works as a thin wrapper that makes only one HTTP call', async () => {

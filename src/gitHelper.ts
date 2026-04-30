@@ -156,7 +156,7 @@ export function detectBuildCommand(rootPath: string): string | undefined {
   return undefined;
 }
 
-export async function buildProject(): Promise<BuildResult> {
+export async function buildProject(outputChannel?: { appendLine(value: string): void }): Promise<BuildResult> {
   const workspaceFolders = vscode.workspace.workspaceFolders;
   if (!workspaceFolders || workspaceFolders.length === 0) {
     return { ok: true, skipped: true, reason: 'No workspace folder open' };
@@ -166,27 +166,29 @@ export async function buildProject(): Promise<BuildResult> {
   const cmd = detectBuildCommand(rootPath);
 
   if (!cmd) {
+    outputChannel?.appendLine('[build] No recognised build system found — skipping build step.');
     return { ok: true, skipped: true, reason: 'No recognised build system found in workspace root' };
   }
 
-  const split = splitBuildCommand(cmd);
-  if (!split) {
-    return { ok: true, skipped: true, reason: `Build command not in allowlist: ${cmd.split(/\s+/)[0]}` };
-  }
-
-  // Resolve relative executable paths (e.g. ./gradlew) against rootPath
-  let executable = split.executable;
-  if (executable.startsWith('./') || executable === 'gradlew.bat') {
-    executable = path.join(rootPath, executable.startsWith('./') ? executable.slice(2) : executable);
-  }
-  const { args } = split;
+  outputChannel?.appendLine(`[build] Detected build command: ${cmd}`);
+  outputChannel?.appendLine(`[build] Working directory: ${rootPath}`);
 
   return new Promise((resolve) => {
-    cp.execFile(executable, args, { cwd: rootPath, timeout: 120_000 }, (error, stdout, stderr) => {
+    // Use exec (runs via the shell) so .cmd wrappers (npm.cmd, npx.cmd) are
+    // found on Windows without requiring the full extension in the command string.
+    cp.exec(cmd, { cwd: rootPath, timeout: 120_000 }, (error, stdout, stderr) => {
+      if (stdout.trim()) {
+        outputChannel?.appendLine('[build:stdout] ' + stdout.trimEnd());
+      }
+      if (stderr.trim()) {
+        outputChannel?.appendLine('[build:stderr] ' + stderr.trimEnd());
+      }
       if (error) {
         const details = (stderr.trim() || stdout.trim() || error.message).slice(0, 3000);
+        outputChannel?.appendLine(`[build] FAILED (exit ${error.code ?? 'unknown'}): ${error.message}`);
         resolve({ ok: false, reason: 'Build failed — see Output panel for details', details });
       } else {
+        outputChannel?.appendLine('[build] Succeeded.');
         resolve({ ok: true });
       }
     });

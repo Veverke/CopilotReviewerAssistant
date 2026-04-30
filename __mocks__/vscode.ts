@@ -11,6 +11,8 @@ export const authentication = {
 
 export const workspace = {
   findFiles: vi.fn(),
+  openTextDocument: vi.fn(),
+  getConfiguration: vi.fn(() => ({ get: vi.fn() })),
   fs: {
     readFile: vi.fn(),
     writeFile: vi.fn(),
@@ -27,7 +29,8 @@ export const lm = {
 };
 
 export const LanguageModelChatMessage = {
-  User: vi.fn((content: string) => ({ role: 'user', content })),
+  User: vi.fn((content: string | any[]) => ({ role: 'user', content })),
+  Assistant: vi.fn((content: string | any[]) => ({ role: 'assistant', content })),
 };
 
 export const Uri = {
@@ -42,6 +45,7 @@ export const window = {
   showInputBox: vi.fn(),
   showErrorMessage: vi.fn(),
   showInformationMessage: vi.fn(),
+  showWarningMessage: vi.fn(),
   createOutputChannel: vi.fn(() => ({
     appendLine: vi.fn(),
     show: vi.fn(),
@@ -53,6 +57,7 @@ export const window = {
 
 export const commands = {
   registerCommand: vi.fn(),
+  executeCommand: vi.fn(),
 };
 
 export const env = {
@@ -64,6 +69,37 @@ export const env = {
 export const ViewColumn = {
   One: 1,
 };
+
+export class Position {
+  constructor(public line: number, public character: number) {}
+}
+
+export class Location {
+  constructor(public uri: any, public range: any) {}
+}
+
+export class Range {
+  constructor(
+    public start: Position,
+    public end: Position
+  ) {}
+}
+
+export class RelativePattern {
+  constructor(public base: any, public pattern: string) {}
+}
+
+export class LanguageModelTextPart {
+  constructor(public value: string) {}
+}
+
+export class LanguageModelToolCallPart {
+  constructor(public callId: string, public name: string, public input: unknown) {}
+}
+
+export class LanguageModelToolResultPart {
+  constructor(public callId: string, public content: Array<LanguageModelTextPart>) {}
+}
 
 export class CancellationTokenSource {
   token = {

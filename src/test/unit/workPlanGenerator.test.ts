@@ -1,5 +1,5 @@
 /**
- * Phase 5 – Work Plan Generation
+ * Phase 5 / Phase 8 – Work Plan Generation (including tool-calling loop)
  *
  * Test plan:
  *  generateWorkPlan()
@@ -10,21 +10,47 @@
  *    - shows QuickPick and uses chosen model when multiple are available
  *    - returns fallback when QuickPick is dismissed
  *    - returns error message when sendRequest throws
- *    - returns error message when the text stream throws mid-stream
+ *    - returns error message when the stream throws mid-stream
+ *    - executes tool calls and returns final text after tool loop
+ *    - stops after MAX_TOOL_ITERATIONS even if model keeps calling tools
  *
  *  generateAllWorkPlans()
  *    - returns an array matching the input length
  *    - each result has the original comment object attached
  *    - returns empty array for empty input
- *    - processes no more than CONCURRENCY (3) items simultaneously
+ *    - processes no more than CONCURRENCY items simultaneously
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('vscode', () => ({
-  lm: { selectChatModels: vi.fn() },
-  window: { showQuickPick: vi.fn() },
-  LanguageModelChatMessage: { User: vi.fn((content: string) => ({ role: 'user', content })) },
+vi.mock('vscode', () => {
+  class LanguageModelTextPart {
+    constructor(public value: string) {}
+  }
+  class LanguageModelToolCallPart {
+    constructor(public callId: string, public name: string, public input: unknown) {}
+  }
+  class LanguageModelToolResultPart {
+    constructor(public callId: string, public content: any[]) {}
+  }
+  return {
+    lm: { selectChatModels: vi.fn() },
+    window: { showQuickPick: vi.fn() },
+    LanguageModelChatMessage: {
+      User: vi.fn((content: string | any[]) => ({ role: 'user', content })),
+      Assistant: vi.fn((content: string | any[]) => ({ role: 'assistant', content })),
+    },
+    LanguageModelTextPart,
+    LanguageModelToolCallPart,
+    LanguageModelToolResultPart,
+  };
+});
+
+vi.mock('../../workspaceTools', () => ({
+  readFileTool: vi.fn().mockResolvedValue('file content'),
+  listFilesTool: vi.fn().mockResolvedValue('src/foo.ts'),
+  getDefinitionTool: vi.fn().mockResolvedValue('src/bar.ts:10'),
+  getReferencesTool: vi.fn().mockResolvedValue('src/baz.ts:5'),
 }));
 
 vi.mock('../../modelSelector', async (importOriginal) => {
@@ -50,13 +76,24 @@ function makeComment(id = 1): ReviewComment {
   };
 }
 
-function makeModel(chunks: string[]): vscode.LanguageModelChat {
+/**
+ * Build a mock LanguageModelChat.
+ * @param chunks  - text chunk strings to yield from the stream
+ * @param toolCalls - optional tool call parts to yield before text (simulates model requesting tools)
+ */
+function makeModel(
+  chunks: string[],
+  toolCalls: vscode.LanguageModelToolCallPart[] = []
+): vscode.LanguageModelChat {
   return {
     sendRequest: vi.fn().mockImplementation(() =>
       Promise.resolve({
-        text: (async function* () {
+        stream: (async function* () {
+          for (const tc of toolCalls) {
+            yield tc;
+          }
           for (const chunk of chunks) {
-            yield chunk;
+            yield new vscode.LanguageModelTextPart(chunk);
           }
         })(),
       })
@@ -141,11 +178,11 @@ describe('generateWorkPlan', () => {
     expect(result).toContain('model unavailable');
   });
 
-  it('returns an error message when the text stream throws mid-stream', async () => {
+  it('returns an error message when the stream throws mid-stream', async () => {
     const model = {
       sendRequest: vi.fn().mockResolvedValue({
-        text: (async function* () {
-          yield 'partial text';
+        stream: (async function* () {
+          yield new vscode.LanguageModelTextPart('partial text');
           throw new Error('stream interrupted');
         })(),
       }),
@@ -157,10 +194,10 @@ describe('generateWorkPlan', () => {
     expect(result).toContain('stream interrupted');
   });
 
-  it('passes a User message to sendRequest', async () => {
+  it('passes a User message and tools to sendRequest', async () => {
     const sendRequest = vi.fn().mockResolvedValue({
-      text: (async function* () {
-        yield '1. done';
+      stream: (async function* () {
+        yield new vscode.LanguageModelTextPart('1. done');
       })(),
     });
     vi.mocked(vscode.lm.selectChatModels).mockResolvedValue([
@@ -171,6 +208,56 @@ describe('generateWorkPlan', () => {
 
     expect(vscode.LanguageModelChatMessage.User).toHaveBeenCalledOnce();
     expect(sendRequest).toHaveBeenCalledOnce();
+    // Tools array should be passed in the options
+    const callOptions = sendRequest.mock.calls[0][1];
+    expect(callOptions).toHaveProperty('tools');
+    expect(Array.isArray(callOptions.tools)).toBe(true);
+    expect(callOptions.tools.length).toBeGreaterThan(0);
+  });
+
+  it('executes a tool call and returns the final text after the tool loop', async () => {
+    const toolCall = new vscode.LanguageModelToolCallPart('call-1', 'read_file', { path: 'src/foo.ts' });
+    // First response: one tool call, no text
+    // Second response: final text, no tool calls
+    const sendRequest = vi.fn()
+      .mockResolvedValueOnce({
+        stream: (async function* () { yield toolCall; })(),
+      })
+      .mockResolvedValueOnce({
+        stream: (async function* () { yield new vscode.LanguageModelTextPart('1. Fix it'); })(),
+      });
+
+    vi.mocked(vscode.lm.selectChatModels).mockResolvedValue([
+      { sendRequest } as unknown as vscode.LanguageModelChat,
+    ] as any);
+
+    const result = await generateWorkPlan(makeComment());
+
+    expect(result).toBe('1. Fix it');
+    expect(sendRequest).toHaveBeenCalledTimes(2);
+    // Second call should include assistant + user messages with tool results
+    expect(vscode.LanguageModelChatMessage.Assistant).toHaveBeenCalledOnce();
+    expect(vscode.LanguageModelChatMessage.User).toHaveBeenCalledTimes(2); // initial + tool results
+  });
+
+  it('stops after MAX_TOOL_ITERATIONS if model keeps calling tools', async () => {
+    const toolCall = new vscode.LanguageModelToolCallPart('call-x', 'list_files', {});
+    // Always returns a fresh stream yielding a tool call, never text
+    const sendRequest = vi.fn().mockImplementation(() =>
+      Promise.resolve({
+        stream: (async function* () { yield toolCall; })(),
+      })
+    );
+
+    vi.mocked(vscode.lm.selectChatModels).mockResolvedValue([
+      { sendRequest } as unknown as vscode.LanguageModelChat,
+    ] as any);
+
+    const result = await generateWorkPlan(makeComment());
+
+    // Should have stopped at MAX_TOOL_ITERATIONS (10) and returned empty string (no text accumulated)
+    expect(sendRequest).toHaveBeenCalledTimes(10);
+    expect(result).toBe('');
   });
 });
 
@@ -213,21 +300,31 @@ describe('generateAllWorkPlans', () => {
     expect(results).toHaveLength(0);
   });
 
-  it('does not run more than CONCURRENCY (3) work plans at the same time', async () => {
+  it('does not exceed CONCURRENCY simultaneous sendRequest calls', async () => {
     let active = 0;
     let maxConcurrent = 0;
 
-    vi.mocked(vscode.lm.selectChatModels).mockImplementation(async () => {
-      active++;
-      maxConcurrent = Math.max(maxConcurrent, active);
-      await new Promise<void>((resolve) => setTimeout(resolve, 5));
-      active--;
-      return [makeModel(['1. done'])] as any;
-    });
+    // Model that tracks concurrent sendRequest calls
+    const trackingModel: vscode.LanguageModelChat = {
+      sendRequest: vi.fn().mockImplementation(async () => {
+        active++;
+        maxConcurrent = Math.max(maxConcurrent, active);
+        await new Promise<void>((resolve) => setTimeout(resolve, 5));
+        active--;
+        return {
+          stream: (async function* () {
+            yield new vscode.LanguageModelTextPart('1. done');
+          })(),
+        };
+      }),
+    } as unknown as vscode.LanguageModelChat;
 
-    const comments = Array.from({ length: 7 }, (_, i) => makeComment(i + 1));
+    vi.mocked(vscode.lm.selectChatModels).mockResolvedValue([trackingModel] as any);
+
+    const comments = Array.from({ length: 10 }, (_, i) => makeComment(i + 1));
     await generateAllWorkPlans(comments);
 
-    expect(maxConcurrent).toBeLessThanOrEqual(3);
+    expect(maxConcurrent).toBeLessThanOrEqual(6); // CONCURRENCY = 6
+    expect(maxConcurrent).toBeGreaterThan(1);     // actually ran concurrently
   });
 });
