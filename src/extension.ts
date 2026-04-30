@@ -5,7 +5,7 @@ import { getGitHubToken, storePat, clearPat } from './auth';
 import { pickFromOpenPrs } from './prInput';
 import { fetchCopilotComments, fetchOpenPullRequests, fetchPrDetails, postReplyComment, resolveReviewThread } from './githubApi';
 import type { PrDetails } from './githubApi';
-import { generateAllWorkPlans, generateWorkPlan, parseComplexity } from './workPlanGenerator';
+import { generateAllWorkPlans, generateWorkPlan, parseComplexity, generateAllComparisons } from './workPlanGenerator';
 import { getSelectedModelName, selectModel } from './modelSelector';
 import { ReviewPanel } from './reviewPanel';
 import { applyFix, resolveWorkspaceFile, DoneFixResult } from './fixApplier';
@@ -328,6 +328,42 @@ export function activate(context: vscode.ExtensionContext) {
 					item.complexity = complexity;
 					panel.postWorkPlanUpdated(id, workPlan, complexity);
 				} catch { /* ignore — UI stays in its loading state */ }
+			})();
+		}, (items) => {
+			// onImportWorkPlans — update in-memory annotated from imported file
+			for (const item of items) {
+				const target = annotated!.find((a) => a.comment.id === item.id);
+				if (target) {
+					target.workPlan = item.workPlan;
+					target.complexity = item.complexity as import('./workPlanGenerator').ComplexityScore;
+				}
+			}
+		}, () => {
+			// onCompareWorkPlans — run optimization for all items
+			void (async () => {
+				const total = annotated!.length;
+				panel.postOptimizeProgress(0, total);
+				let settled = 0;
+				const results = await generateAllComparisons(annotated!, (done, _total) => {
+					// generateAllComparisons calls onProgress after each item completes;
+					// we use per-item card status below instead, so just track count here.
+					settled = done;
+				});
+				// Post per-item results as they resolve — deliver each card update
+				// immediately so the UI highlights and dims cards in sequence.
+				for (let i = 0; i < annotated!.length; i++) {
+					panel.postOptimizeCardStatus(annotated![i].comment.id, 'optimizing');
+					const r = results[i];
+					if (r) {
+						annotated![i].workPlan = r.finalPlan;
+						annotated![i].complexity = r.complexity;
+						panel.postComparisonResult(annotated![i].comment.id, r);
+						panel.postOptimizeCardStatus(annotated![i].comment.id, 'done');
+					} else {
+						panel.postOptimizeCardStatus(annotated![i].comment.id, 'failed');
+					}
+					panel.postOptimizeProgress(i + 1, total);
+				}
 			})();
 		}, outputChannel);
 

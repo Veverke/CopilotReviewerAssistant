@@ -1,9 +1,15 @@
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
-import { AnnotatedComment } from './workPlanGenerator';
+import { AnnotatedComment, ComparisonResult } from './workPlanGenerator';
 import { PrMetadata } from './githubApi';
 import { FixStatus, DoneFixResult } from './fixApplier';
 import { GitStatus } from './gitHelper';
+
+export interface ImportedWorkPlanItem {
+  id: number;
+  workPlan: string;
+  complexity: string;
+}
 
 export class ReviewPanel {
   public static currentPanel: ReviewPanel | undefined;
@@ -19,6 +25,8 @@ export class ReviewPanel {
   private _onRetryFix: ((id: number) => void) | undefined;
   private _onRetryBuild: (() => void) | undefined;
   private _onRegenerateWorkPlan: ((id: number) => void) | undefined;
+  private _onImportWorkPlans: ((items: ImportedWorkPlanItem[]) => void) | undefined;
+  private _onCompareWorkPlans: (() => void) | undefined;
   private _doneResults: DoneFixResult[] = [];
   private _prMeta: PrMetadata = { title: '', assignee: null, filesChangedCount: 0 };
 
@@ -152,6 +160,47 @@ export class ReviewPanel {
           })();
         } else if (message.command === 'regenerateWorkPlan' && message.id !== undefined) {
           this._onRegenerateWorkPlan?.(message.id);
+        } else if (message.command === 'importWorkPlans') {
+          void (async () => {
+            const uris = await vscode.window.showOpenDialog({
+              filters: { 'JSON': ['json'] },
+              canSelectMany: false,
+              title: 'Import Work Plans',
+            });
+            if (!uris || uris.length === 0) { return; }
+            let data: { reviews?: unknown[] };
+            try {
+              const bytes = await vscode.workspace.fs.readFile(uris[0]);
+              data = JSON.parse(Buffer.from(bytes).toString('utf-8'));
+            } catch {
+              vscode.window.showErrorMessage('Could not read or parse the selected file. Ensure it is a valid review export JSON.');
+              return;
+            }
+            if (!Array.isArray(data?.reviews)) {
+              vscode.window.showErrorMessage('The selected file does not contain a "reviews" array.');
+              return;
+            }
+            const imported: ImportedWorkPlanItem[] = [];
+            for (const raw of data.reviews) {
+              const item = raw as Record<string, unknown>;
+              if (typeof item.id !== 'number') { continue; }
+              const steps = Array.isArray(item.workPlan) ? (item.workPlan as string[]) : [];
+              const workPlan = steps.map((s, i) => `${i + 1}. ${s}`).join('\n');
+              const workPlanHtml = workPlanArrayToHtml(steps);
+              const complexity = typeof item.complexity === 'string' ? item.complexity : 'low';
+              imported.push({ id: item.id, workPlan, complexity });
+              void this._panel.webview.postMessage({
+                command: 'applyImportedWorkPlan',
+                id: item.id,
+                workPlan,
+                workPlanHtml,
+                complexity,
+              });
+            }
+            this._onImportWorkPlans?.(imported);
+          })();
+        } else if (message.command === 'compareWorkPlans') {
+          this._onCompareWorkPlans?.();
         } else if (message.command === 'openChat' && message.text) {
           this._outputChannel?.appendLine(`[openChat] type=${message.chatType} #${message.number} text-start="${message.text.slice(0, 80)}"`);
           const prompt = message.chatType === 'comment'
@@ -205,6 +254,8 @@ export class ReviewPanel {
     onRetryFix: (id: number) => void,
     onRetryBuild: () => void,
     onRegenerateWorkPlan: (id: number) => void,
+    onImportWorkPlans: (items: ImportedWorkPlanItem[]) => void,
+    onCompareWorkPlans: () => void,
     outputChannel?: vscode.OutputChannel
   ): void {
     this._prMeta = prMeta;
@@ -213,6 +264,8 @@ export class ReviewPanel {
     this._onRetryFix = onRetryFix;
     this._onRetryBuild = onRetryBuild;
     this._onRegenerateWorkPlan = onRegenerateWorkPlan;
+    this._onImportWorkPlans = onImportWorkPlans;
+    this._onCompareWorkPlans = onCompareWorkPlans;
     this._outputChannel = outputChannel;
     this._doneResults = [];
     this._update(prUrl, comments, modelName);
@@ -404,6 +457,8 @@ export class ReviewPanel {
       </label>
       <button id="apply-btn" disabled>Apply Selected Fixes</button>
       <button id="export-btn" class="secondary">Export</button>
+      <button id="import-btn" class="secondary">Import</button>
+      <button id="compare-btn" class="secondary">Optimize Plans</button>
       <button id="stage-commit-push-btn" class="hidden">Stage, Commit &amp; Push</button>
       <div class="group-sort-row">
         <span class="controls-label">Group by:</span>
@@ -421,6 +476,14 @@ export class ReviewPanel {
       </div>
       <div class="apply-progress-bar-track">
         <div class="apply-progress-bar-fill" id="apply-progress-fill"></div>
+      </div>
+    </div>
+    <div id="optimize-progress" class="apply-progress hidden" role="status" aria-live="polite">
+      <div class="apply-progress-text" id="optimize-progress-text">
+        <span class="apply-progress-spinner" id="optimize-progress-spinner" aria-hidden="true"></span>
+      </div>
+      <div class="apply-progress-bar-track">
+        <div class="apply-progress-bar-fill" id="optimize-progress-fill"></div>
       </div>
     </div>
   </div>
@@ -468,6 +531,27 @@ export class ReviewPanel {
     });
   }
 
+  public postComparisonResult(id: number, result: ComparisonResult): void {
+    void this._panel.webview.postMessage({
+      command: 'comparisonResult',
+      id,
+      modelPlanHtml: workPlanToHtml(result.modelPlan),
+      rationale: result.rationale,
+      winner: result.winner,
+      finalPlanHtml: workPlanToHtml(result.finalPlan),
+      finalPlan: result.finalPlan,
+      complexity: result.complexity,
+    });
+  }
+
+  public postOptimizeProgress(current: number, total: number): void {
+    void this._panel.webview.postMessage({ command: 'optimizeProgress', current, total });
+  }
+
+  public postOptimizeCardStatus(id: number, state: 'optimizing' | 'done' | 'failed'): void {
+    void this._panel.webview.postMessage({ command: 'optimizeCardStatus', id, state });
+  }
+
   public dispose(): void {
     ReviewPanel.currentPanel = undefined;
     this._panel.dispose();
@@ -513,4 +597,14 @@ export function safeGithubUrl(url: string): string | null {
     // invalid URL
   }
   return null;
+}
+
+/** Converts a string[] of work plan steps into an <ol>. Falls back to <p>. */
+export function workPlanArrayToHtml(steps: string[]): string {
+  if (steps.length === 0) { return '<p></p>'; }
+  if (steps.length === 1 && !/^\d+\./.test(steps[0])) {
+    return `<p>${escapeHtml(steps[0])}</p>`;
+  }
+  const listItems = steps.map((s) => `<li>${escapeHtml(s)}</li>`).join('');
+  return `<ol>${listItems}</ol>`;
 }

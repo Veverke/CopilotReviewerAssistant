@@ -198,6 +198,19 @@ button.secondary:hover:not(:disabled) {
 .card.state-done .card-body { opacity: 0.55; transition: opacity 0.3s ease; }
 .card.state-done input[type="checkbox"] { pointer-events: none; }
 
+@keyframes optimizing-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.15); }
+  50%       { box-shadow: 0 0 0 5px rgba(99, 102, 241, 0.30); }
+}
+
+.card.state-optimizing {
+  border-left-color: var(--vscode-textLink-foreground);
+  background-color: rgba(99, 102, 241, 0.06);
+  animation: optimizing-pulse 1.4s ease-in-out infinite;
+}
+.card.state-optimized { border-left-color: var(--vscode-testing-iconPassed, #4caf50); }
+.card.state-optimized .card-body { opacity: 0.65; transition: opacity 0.3s ease; }
+
 .card input[type="checkbox"] {
   margin-top: 4px;
   flex-shrink: 0;
@@ -479,6 +492,91 @@ details[open] summary::before {
   font-size: 0.9em;
   color: var(--vscode-descriptionForeground);
   font-style: italic;
+}
+
+/* ─── Imported badge ──────────────────────────────────────────────────────── */
+.work-plan-imported-badge {
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--vscode-textLink-foreground);
+  opacity: 0.7;
+  border-left: 2px solid var(--vscode-textLink-foreground);
+  padding-left: 5px;
+  margin-right: 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ─── Optimization section ───────────────────────────────────────────────── */
+.optimization-section {
+  margin-top: 10px;
+  border: 1px solid var(--vscode-panel-border);
+  border-left: 3px solid var(--vscode-focusBorder);
+  border-radius: 5px;
+  background-color: var(--vscode-textBlockQuote-background);
+  overflow: hidden;
+}
+
+.optimization-summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  user-select: none;
+  list-style: none;
+  gap: 8px;
+}
+
+.optimization-summary:hover {
+  background-color: var(--vscode-list-hoverBackground);
+}
+
+.optimization-body {
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--vscode-panel-border);
+}
+
+.optimization-winner-badge {
+  display: inline-block;
+  font-size: 0.75em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border-radius: 4px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+}
+
+.optimization-winner-original {
+  background-color: rgba(234, 179, 8, 0.12);
+  color: #facc15;
+  border-color: rgba(234, 179, 8, 0.35);
+}
+
+.optimization-winner-model,
+.optimization-winner-imported {
+  background-color: rgba(34, 197, 94, 0.12);
+  color: var(--vscode-testing-iconPassed, #4caf50);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.optimization-rationale {
+  font-size: 0.85em;
+  color: var(--vscode-foreground);
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+.optimization-model-plan-details {
+  margin-top: 4px;
+}
+
+.optimization-model-plan-details > summary {
+  font-size: 0.82em;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
 }
 
 

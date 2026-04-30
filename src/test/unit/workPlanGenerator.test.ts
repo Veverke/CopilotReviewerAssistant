@@ -255,9 +255,9 @@ describe('generateWorkPlan', () => {
 
     const result = await generateWorkPlan(makeComment());
 
-    // Should have stopped at MAX_TOOL_ITERATIONS (10) and returned empty string (no text accumulated)
+    // Should have stopped at MAX_TOOL_ITERATIONS (10) and returned an error message
     expect(sendRequest).toHaveBeenCalledTimes(10);
-    expect(result).toBe('');
+    expect(result).toMatch(/model exceeded maximum tool call iterations/);
   });
 });
 
