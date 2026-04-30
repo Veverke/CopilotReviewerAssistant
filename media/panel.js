@@ -10,6 +10,9 @@
   const applyProgress = document.getElementById('apply-progress');
   const applyProgressText = document.getElementById('apply-progress-text');
   const applyProgressFill = document.getElementById('apply-progress-fill');
+  const optimizeProgress = document.getElementById('optimize-progress');
+  const optimizeProgressText = document.getElementById('optimize-progress-text');
+  const optimizeProgressFill = document.getElementById('optimize-progress-fill');
   var settledCount = 0;  // done + failed
   var totalApplying = 0;
 
@@ -244,16 +247,68 @@
           .filter(function(l) { return /^\d+\.\s+/.test(l); })
           .map(function(l) { return l.replace(/^\d+\.\s+/, ''); });
         if (workPlanSteps.length === 0 && workplanText) { workPlanSteps = [workplanText]; }
-        items.push({
+
+        var item = {
+          id: Number(card.dataset.id) || 0,
           number: Number(card.dataset.number) || (items.length + 1),
           file: card.dataset.file || '',
           complexity: card.dataset.complexity || '',
           issue: issueText,
           workPlan: workPlanSteps,
-        });
+        };
+
+        // Phase D: include optimization data if present
+        var compSection = card.querySelector('.optimization-section');
+        if (compSection) {
+          var winnerBadgeEl = compSection.querySelector('.optimization-winner-badge');
+          var winner = winnerBadgeEl
+            ? (winnerBadgeEl.classList.contains('optimization-winner-original') ? 'original' : 'model')
+            : 'model';
+          var rationaleEl = compSection.querySelector('.optimization-rationale');
+          var rationale = rationaleEl ? (rationaleEl.textContent || '').trim() : '';
+          var modelPlanEl = compSection.querySelector('.optimization-model-plan-details .work-plan');
+          var modelPlanSteps = [];
+          if (modelPlanEl) {
+            modelPlanEl.querySelectorAll('li').forEach(function(li) {
+              modelPlanSteps.push(li.textContent || '');
+            });
+            if (modelPlanSteps.length === 0 && modelPlanEl.textContent) {
+              modelPlanSteps = [(modelPlanEl.textContent || '').trim()];
+            }
+          }
+          item.comparison = {
+            winner: winner,
+            rationale: rationale,
+            modelPlan: modelPlanSteps,
+            finalPlan: workPlanSteps,
+          };
+        }
+
+        items.push(item);
       });
       var content = JSON.stringify({ reviews: items }, null, 2);
       vscode.postMessage({ command: 'exportReviews', content: content });
+    });
+  }
+
+  // ─── Import button ───────────────────────────────────────────────────────────
+  var importBtn = document.getElementById('import-btn');
+  if (importBtn) {
+    importBtn.addEventListener('click', function() {
+      vscode.postMessage({ command: 'importWorkPlans' });
+    });
+  }
+
+  // ─── Optimize Plans button ───────────────────────────────────────────────────
+  var compareBtn = document.getElementById('compare-btn');
+  var comparePending = 0;
+  if (compareBtn) {
+    compareBtn.addEventListener('click', function() {
+      if (compareBtn.disabled) { return; }
+      comparePending = getAllCards().length;
+      compareBtn.disabled = true;
+      compareBtn.textContent = 'Optimizing\u2026';
+      vscode.postMessage({ command: 'compareWorkPlans' });
     });
   }
 
@@ -347,7 +402,15 @@
     } else if (message.command === 'banner') {
       showBanner(message.message, message.type);
     } else if (message.command === 'workPlanUpdated') {
-      updateWorkPlan(message.id, message.workPlan, message.workPlanHtml, message.complexity);
+      updateWorkPlan(message.id, message.workPlan, message.workPlanHtml, message.complexity, false);
+    } else if (message.command === 'applyImportedWorkPlan') {
+      updateImportedWorkPlan(message.id, message.workPlan, message.workPlanHtml, message.complexity);
+    } else if (message.command === 'comparisonResult') {
+      updateComparison(message.id, message.modelPlanHtml, message.rationale, message.winner, message.finalPlanHtml, message.finalPlan, message.complexity);
+    } else if (message.command === 'optimizeProgress') {
+      updateOptimizeProgress(message.current, message.total);
+    } else if (message.command === 'optimizeCardStatus') {
+      updateOptimizeCardStatus(message.id, message.state);
     }
   });
 
@@ -451,7 +514,39 @@
     gitNotice.classList.remove('hidden');
   }
 
-  function updateWorkPlan(id, workPlan, workPlanHtml, complexity) {
+  function updateImportedWorkPlan(id, workPlan, workPlanHtml, complexity) {
+    var card = document.querySelector('.card[data-id="' + id + '"]');
+    var cardBody = card ? card.querySelector('.card-body') : null;
+    var workplanEl = card ? card.querySelector('.discuss-workplan') : null;
+    var oldPlan = workplanEl ? (workplanEl.dataset.rawWorkplan || '').trim() : null;
+    var newPlan = (workPlan || '').trim();
+
+    updateWorkPlan(id, workPlan, workPlanHtml, complexity, true);
+
+    if (!cardBody || oldPlan === null) { return; }
+
+    // Remove any previous import/optimization section
+    var existing = cardBody.querySelector('.optimization-section');
+    if (existing) { existing.parentNode.removeChild(existing); }
+
+    // Only add the badge section if the plan actually changed
+    if (oldPlan === newPlan) { return; }
+
+    var section = document.createElement('details');
+    section.className = 'optimization-section';
+
+    var summary = document.createElement('summary');
+    summary.className = 'optimization-summary';
+    var badge = document.createElement('span');
+    badge.className = 'optimization-winner-badge optimization-winner-imported';
+    badge.textContent = 'Imported Plan';
+    summary.appendChild(badge);
+    section.appendChild(summary);
+
+    cardBody.appendChild(section);
+  }
+
+  function updateWorkPlan(id, workPlan, workPlanHtml, complexity, imported) {
     var card = document.querySelector('.card[data-id="' + id + '"]');
     if (!card) { return; }
 
@@ -462,6 +557,20 @@
       var workPlanContent = workplanEl.querySelector('.work-plan');
       if (workPlanContent) {
         workPlanContent.innerHTML = workPlanHtml;
+      }
+
+      // Imported badge — add once, never duplicate
+      if (imported) {
+        if (!workplanEl.querySelector('.work-plan-imported-badge')) {
+          var label = workplanEl.querySelector('.work-plan-label');
+          if (label) {
+            var badge = document.createElement('span');
+            badge.className = 'work-plan-imported-badge';
+            badge.title = 'Work plan was imported from file';
+            badge.textContent = '\u21a5 imported';
+            label.insertBefore(badge, label.firstChild);
+          }
+        }
       }
     }
 
@@ -486,6 +595,126 @@
     if (currentGroup !== 'none') {
       renderGrouped();
     }
+  }
+
+  function updateComparison(id, modelPlanHtml, rationale, winner, finalPlanHtml, finalPlan, complexity) {
+    // Update the active work plan with the winning plan
+    updateWorkPlan(id, finalPlan, finalPlanHtml, complexity, false);
+
+    var card = document.querySelector('.card[data-id="' + id + '"]');
+    if (!card) {
+      decrementComparePending();
+      return;
+    }
+
+    var cardBody = card.querySelector('.card-body');
+    if (!cardBody) { decrementComparePending(); return; }
+
+    // Remove any previous optimization section on this card
+    var existing = card.querySelector('.optimization-section');
+    if (existing) { existing.parentNode.removeChild(existing); }
+
+    var winnerLabel = winner === 'original' ? 'Original Plan' : 'Optimized Plan';
+    var section = document.createElement('details');
+    section.className = 'optimization-section';
+
+    var summary = document.createElement('summary');
+    summary.className = 'optimization-summary';
+    var winnerBadge = document.createElement('span');
+    winnerBadge.className = 'optimization-winner-badge optimization-winner-' + winner;
+    winnerBadge.textContent = winnerLabel;
+    summary.appendChild(winnerBadge);
+    section.appendChild(summary);
+
+    var body = document.createElement('div');
+    body.className = 'optimization-body';
+
+    if (rationale) {
+      var rationaleEl = document.createElement('p');
+      rationaleEl.className = 'optimization-rationale';
+      rationaleEl.textContent = rationale;
+      body.appendChild(rationaleEl);
+    }
+
+    if (modelPlanHtml) {
+      var modelDetails = document.createElement('details');
+      modelDetails.className = 'optimization-model-plan-details';
+      var modelSummary = document.createElement('summary');
+      modelSummary.textContent = 'Model\u2019s independent plan';
+      modelDetails.appendChild(modelSummary);
+      var modelPlanDiv = document.createElement('div');
+      modelPlanDiv.className = 'work-plan';
+      modelPlanDiv.innerHTML = modelPlanHtml;
+      modelDetails.appendChild(modelPlanDiv);
+      body.appendChild(modelDetails);
+    }
+
+    section.appendChild(body);
+    cardBody.appendChild(section);
+
+    decrementComparePending();
+  }
+
+  function updateOptimizeProgress(current, total) {
+    if (!optimizeProgress || !optimizeProgressText || !optimizeProgressFill) { return; }
+    if (total === 0) { return; }
+    if (current === 0) {
+      optimizeProgress.classList.remove('hidden', 'done');
+    }
+    var pct = Math.round(current / total * 100);
+    optimizeProgressFill.style.width = pct + '%';
+    if (current >= total) {
+      optimizeProgress.classList.add('done');
+      var textNode = optimizeProgressText.lastChild;
+      if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+        textNode.textContent = 'All ' + total + ' plans optimized';
+      } else {
+        optimizeProgressText.appendChild(document.createTextNode('All ' + total + ' plans optimized'));
+      }
+      setTimeout(function() { optimizeProgress.classList.add('hidden'); }, 1400);
+      if (compareBtn) {
+        compareBtn.disabled = false;
+        compareBtn.textContent = 'Optimize Plans';
+        comparePending = 0;
+      }
+    } else {
+      optimizeProgress.classList.remove('done');
+      var label = 'Optimizing plans: ' + current + ' / ' + total + ' done';
+      var textNode2 = optimizeProgressText.lastChild;
+      if (textNode2 && textNode2.nodeType === Node.TEXT_NODE) {
+        textNode2.textContent = label;
+      } else {
+        optimizeProgressText.appendChild(document.createTextNode(label));
+      }
+    }
+  }
+
+  function updateOptimizeCardStatus(id, state) {
+    var card = document.querySelector('.card[data-id="' + id + '"]');
+    if (!card) { return; }
+
+    card.classList.remove('state-optimizing', 'state-optimized');
+
+    if (state === 'optimizing') {
+      card.classList.add('state-optimizing');
+      // Scroll to card, accounting for sticky header
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      var stickyTop = document.querySelector('.sticky-top');
+      var headerHeight = stickyTop ? stickyTop.offsetHeight : 0;
+      var cardTop = card.getBoundingClientRect().top + window.scrollY;
+      var viewportTop = window.scrollY + headerHeight;
+      if (cardTop < viewportTop + 8) {
+        window.scrollTo({ top: cardTop - headerHeight - 8, behavior: 'smooth' });
+      }
+    } else if (state === 'done') {
+      card.classList.add('state-optimized');
+    } else if (state === 'failed') {
+      // leave neutral — no persistent failure styling needed for optimization
+    }
+  }
+
+  function decrementComparePending() {
+    // No-op — compare button re-enable is now handled by updateOptimizeProgress
   }
 
   function showGitNotice(message, cls) {
