@@ -2,10 +2,10 @@
   "name": "copilot-reviewer-assistant",
   "displayName": "Copilot Reviewer Assistant",
   "description": "GitHub Copilot review suggestions don't always come with an 'Apply' button. This extension fills that gap — fetch every pending Copilot review comment and apply all fixes automatically, straight from VS Code.",
-  "version": "1.8.0",
+  "version": "1.0.0",
   "publisher": "Veverke",
   "icon": "media/icon.png",
-  "license": "MIT AND Commons-Clause",
+  "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
     "url": "https://github.com/Veverke/CopilotReviewerAssistant"
@@ -16,10 +16,15 @@
   "engines": {
     "vscode": "^1.90.0"
   },
+  "galleryBanner": {
+    "color": "#0e4f6b",
+    "theme": "dark"
+  },
   "categories": [
-    "Other"
+    "AI",
+    "SCM Providers"
   ],
-  "keywords": ["copilot", "github", "pull request", "code review", "ai"],
+  "keywords": ["copilot", "github", "pull request", "code review", "ai", "github pull request", "github pull request review", "pr automation", "fix with copilot", "code review automation"],
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {

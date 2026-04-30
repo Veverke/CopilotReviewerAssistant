@@ -61,7 +61,10 @@ Beyond the core automation workflow, the extension gives you a richer review exp
 
 ## Extension Settings
 
-This extension does not contribute any user-configurable settings.
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `copilotReviewer.additionalBotLogins` | `string[]` | `[]` | Extra GitHub login names to treat as trusted Copilot bot accounts. Useful if your organisation uses a custom bot that leaves review comments alongside the standard `copilot-pull-request-reviewer[bot]`. Only exact login names are accepted — no wildcards or patterns. |
+| `copilotReviewer.preFillFromClipboard` | `boolean` | `false` | When enabled, the PR URL input box is pre-populated with the clipboard contents if they match a GitHub pull request URL. |
 
 ## Known Issues
 
@@ -70,6 +73,6 @@ This extension does not contribute any user-configurable settings.
 
 ## Release Notes
 
-### 0.1.0
+### 1.0.0
 
-Initial release — full pipeline from PR URL input through Copilot comment fetch, AI work plan generation, Webview checklist, fix application, and Git commit.
+Initial public release.
