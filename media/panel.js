@@ -195,8 +195,8 @@
   // ─── Discuss in Copilot Chat ─────────────────────────────────────────────────
   document.addEventListener('click', function(e) {
     var target = e.target;
-    // Ignore copy button clicks
-    if (target.closest && target.closest('.copy-btn')) { return; }
+    // Ignore copy button and regen button clicks
+    if (target.closest && (target.closest('.copy-btn') || target.closest('.regen-btn'))) { return; }
 
     // Walk up to find .discuss-comment or .discuss-workplan
     var el = target;
@@ -225,6 +225,47 @@
       var rawText = el.dataset.rawWorkplan || (el.querySelector('.work-plan') || el).textContent || '';
       vscode.postMessage({ command: 'openChat', chatType: 'workplan', number: number, text: rawText.trim() });
     }
+  });
+
+  // ─── Export button ───────────────────────────────────────────────────────────
+  var exportBtn = document.getElementById('export-btn');
+  if (exportBtn) {
+    exportBtn.addEventListener('click', function() {
+      var cards = getAllCards();
+      var sections = [];
+      cards.forEach(function(card) {
+        var commentBodyEl = card.querySelector('.comment-body');
+        var issueText = commentBodyEl ? (commentBodyEl.textContent || '').trim() : '';
+        var workplanEl = card.querySelector('.discuss-workplan');
+        var workplanText = workplanEl ? (workplanEl.dataset.rawWorkplan || '').trim() : '';
+        var num = card.dataset.number || (sections.length + 1);
+        sections.push('Issue ' + num + ': ' + issueText + '\n\nWork-plan: ' + workplanText);
+      });
+      var separator = '\n\n=========================================\n\n';
+      var content = sections.join(separator);
+      vscode.postMessage({ command: 'exportReviews', content: content });
+    });
+  }
+
+  // ─── Regenerate work plan buttons ────────────────────────────────────────────
+  document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.regen-btn');
+    if (!btn) { return; }
+    e.stopPropagation();
+    if (btn.disabled) { return; }
+
+    var id = Number(btn.dataset.id);
+    var card = btn.closest('.card');
+    var workplanEl = card ? card.querySelector('.discuss-workplan') : null;
+    var workPlanContent = workplanEl ? workplanEl.querySelector('.work-plan') : null;
+
+    btn.disabled = true;
+    btn.classList.add('regen-btn-spinning');
+    if (workPlanContent) {
+      workPlanContent.innerHTML = '<em class="work-plan-regenerating">Regenerating\u2026</em>';
+    }
+
+    vscode.postMessage({ command: 'regenerateWorkPlan', id: id });
   });
 
   // ─── Checkbox / apply wiring ─────────────────────────────────────────────────
@@ -295,6 +336,8 @@
       updateGitStatus(message.status);
     } else if (message.command === 'banner') {
       showBanner(message.message, message.type);
+    } else if (message.command === 'workPlanUpdated') {
+      updateWorkPlan(message.id, message.workPlan, message.workPlanHtml, message.complexity);
     }
   });
 
@@ -396,6 +439,43 @@
     });
     gitNotice.appendChild(retryBtn);
     gitNotice.classList.remove('hidden');
+  }
+
+  function updateWorkPlan(id, workPlan, workPlanHtml, complexity) {
+    var card = document.querySelector('.card[data-id="' + id + '"]');
+    if (!card) { return; }
+
+    // Update work plan content
+    var workplanEl = card.querySelector('.discuss-workplan');
+    if (workplanEl) {
+      workplanEl.dataset.rawWorkplan = workPlan;
+      var workPlanContent = workplanEl.querySelector('.work-plan');
+      if (workPlanContent) {
+        workPlanContent.innerHTML = workPlanHtml;
+      }
+    }
+
+    // Update complexity badge and card data attribute
+    var COMPLEXITY_LABELS = { low: 'LOW', medium: 'MED', high: 'HIGH' };
+    card.dataset.complexity = complexity;
+    var badge = card.querySelector('.complexity-badge');
+    if (badge) {
+      badge.className = 'complexity-badge complexity-' + complexity;
+      badge.title = 'Complexity: ' + complexity;
+      badge.textContent = COMPLEXITY_LABELS[complexity] || complexity.toUpperCase();
+    }
+
+    // Re-enable the regen button
+    var regenBtn = card.querySelector('.regen-btn');
+    if (regenBtn) {
+      regenBtn.disabled = false;
+      regenBtn.classList.remove('regen-btn-spinning');
+    }
+
+    // Re-apply grouping so the card lands in the right group if complexity changed
+    if (currentGroup !== 'none') {
+      renderGrouped();
+    }
   }
 
   function showGitNotice(message, cls) {

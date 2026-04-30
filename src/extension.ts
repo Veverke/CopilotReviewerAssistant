@@ -5,7 +5,7 @@ import { getGitHubToken, storePat, clearPat } from './auth';
 import { pickFromOpenPrs } from './prInput';
 import { fetchCopilotComments, fetchOpenPullRequests, fetchPrDetails, postReplyComment, resolveReviewThread } from './githubApi';
 import type { PrDetails } from './githubApi';
-import { generateAllWorkPlans } from './workPlanGenerator';
+import { generateAllWorkPlans, generateWorkPlan, parseComplexity } from './workPlanGenerator';
 import { getSelectedModelName, selectModel } from './modelSelector';
 import { ReviewPanel } from './reviewPanel';
 import { applyFix, resolveWorkspaceFile, DoneFixResult } from './fixApplier';
@@ -254,6 +254,7 @@ export function activate(context: vscode.ExtensionContext) {
 			const buildResult = await buildProject(outputChannel);
 			if (!buildResult.ok) {
 				panel.postGitStatus({ state: 'build-failed', reason: buildResult.reason, details: buildResult.details });
+				vscode.window.showErrorMessage('Build failed. Check Copilot Reviewer Assistant logs. Fix build and try again.');
 				return;
 			}
 			if (buildResult.skipped && buildResult.reason) {
@@ -309,10 +310,24 @@ export function activate(context: vscode.ExtensionContext) {
 				const buildResult = await buildProject(outputChannel);
 				if (!buildResult.ok) {
 					panel.postGitStatus({ state: 'build-failed', reason: buildResult.reason, details: buildResult.details });
+					vscode.window.showErrorMessage('Build failed. Check Copilot Reviewer Assistant logs. Fix build and try again.');
 					return;
 				}
 				panel.postGitStatus({ state: 'build-succeeded' });
 				await commitAndPush(pendingDoneResults!);
+			})();
+		}, (id) => {
+			// onRegenerateWorkPlan — regenerate a single work plan from scratch
+			const item = annotated!.find((a) => a.comment.id === id);
+			if (!item) { return; }
+			void (async () => {
+				try {
+					const raw = await generateWorkPlan(item.comment);
+					const { workPlan, complexity } = parseComplexity(raw, item.comment);
+					item.workPlan = workPlan;
+					item.complexity = complexity;
+					panel.postWorkPlanUpdated(id, workPlan, complexity);
+				} catch { /* ignore — UI stays in its loading state */ }
 			})();
 		}, outputChannel);
 

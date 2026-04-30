@@ -163,7 +163,7 @@ function buildPrompt(comment: ReviewComment): string {
 }
 
 /** Extract and strip the Complexity: line from the raw LLM response. */
-function parseComplexity(
+export function parseComplexity(
   raw: string,
   comment: ReviewComment
 ): { workPlan: string; complexity: ComplexityScore } {

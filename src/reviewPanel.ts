@@ -18,6 +18,7 @@ export class ReviewPanel {
   private _onStageCommitAndPush: ((doneResults: DoneFixResult[]) => void) | undefined;
   private _onRetryFix: ((id: number) => void) | undefined;
   private _onRetryBuild: (() => void) | undefined;
+  private _onRegenerateWorkPlan: ((id: number) => void) | undefined;
   private _doneResults: DoneFixResult[] = [];
   private _prMeta: PrMetadata = { title: '', assignee: null, filesChangedCount: 0 };
 
@@ -129,7 +130,7 @@ export class ReviewPanel {
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
     this._panel.webview.onDidReceiveMessage(
-      (message: { command: string; selectedIds?: number[]; id?: number; chatType?: string; number?: number; text?: string }) => {
+      (message: { command: string; selectedIds?: number[]; id?: number; chatType?: string; number?: number; text?: string; content?: string }) => {
         if (message.command === 'applyFixes' && message.selectedIds) {
           this._onApplyFixes?.(message.selectedIds);
         } else if (message.command === 'stageCommitAndPush') {
@@ -138,6 +139,19 @@ export class ReviewPanel {
           this._onRetryFix?.(message.id);
         } else if (message.command === 'retryBuild') {
           this._onRetryBuild?.();
+        } else if (message.command === 'exportReviews' && message.content) {
+          void (async () => {
+            const uri = await vscode.window.showSaveDialog({
+              defaultUri: vscode.Uri.file('review-export.md'),
+              filters: { 'Markdown': ['md'] },
+              title: 'Export Review Items',
+            });
+            if (!uri) { return; }
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(message.content as string, 'utf-8'));
+            vscode.window.showInformationMessage('Review items exported successfully.');
+          })();
+        } else if (message.command === 'regenerateWorkPlan' && message.id !== undefined) {
+          this._onRegenerateWorkPlan?.(message.id);
         } else if (message.command === 'openChat' && message.text) {
           this._outputChannel?.appendLine(`[openChat] type=${message.chatType} #${message.number} text-start="${message.text.slice(0, 80)}"`);
           const prompt = message.chatType === 'comment'
@@ -190,6 +204,7 @@ export class ReviewPanel {
     onStageCommitAndPush: (doneResults: DoneFixResult[]) => void,
     onRetryFix: (id: number) => void,
     onRetryBuild: () => void,
+    onRegenerateWorkPlan: (id: number) => void,
     outputChannel?: vscode.OutputChannel
   ): void {
     this._prMeta = prMeta;
@@ -197,6 +212,7 @@ export class ReviewPanel {
     this._onStageCommitAndPush = onStageCommitAndPush;
     this._onRetryFix = onRetryFix;
     this._onRetryBuild = onRetryBuild;
+    this._onRegenerateWorkPlan = onRegenerateWorkPlan;
     this._outputChannel = outputChannel;
     this._doneResults = [];
     this._update(prUrl, comments, modelName);
@@ -348,7 +364,7 @@ export class ReviewPanel {
               </div>
             </details>
             <div class="discuss-workplan work-plan-section" data-raw-workplan="${escapeHtml(workPlan)}" title="Click to discuss this work plan in Copilot Chat">
-              <div class="work-plan-label">Work plan <button class="copy-btn" data-copy-type="workplan" title="Copy work plan text" aria-label="Copy work plan text">&#128203;</button></div>
+              <div class="work-plan-label">Work plan <button class="copy-btn" data-copy-type="workplan" title="Copy work plan text" aria-label="Copy work plan text">&#128203;</button><button class="regen-btn" data-id="${comment.id}" title="Regenerate work plan from scratch" aria-label="Regenerate work plan">&#8635;</button></div>
               <div class="work-plan">${workPlanToHtml(workPlan)}</div>
             </div>
           </div>
@@ -387,6 +403,7 @@ export class ReviewPanel {
         <span id="select-all-text">Select all</span>
       </label>
       <button id="apply-btn" disabled>Apply Selected Fixes</button>
+      <button id="export-btn" class="secondary">Export</button>
       <button id="stage-commit-push-btn" class="hidden">Stage, Commit &amp; Push</button>
       <div class="group-sort-row">
         <span class="controls-label">Group by:</span>
@@ -439,6 +456,16 @@ export class ReviewPanel {
 
   public postGitStatus(status: GitStatus): void {
     void this._panel.webview.postMessage({ command: 'gitStatus', status });
+  }
+
+  public postWorkPlanUpdated(id: number, workPlan: string, complexity: string): void {
+    void this._panel.webview.postMessage({
+      command: 'workPlanUpdated',
+      id,
+      workPlan,
+      workPlanHtml: workPlanToHtml(workPlan),
+      complexity,
+    });
   }
 
   public dispose(): void {
