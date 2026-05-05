@@ -397,7 +397,7 @@ export class ReviewPanel {
             type="checkbox"
             class="comment-checkbox"
             data-id="${comment.id}"
-            ${fileNotFound ? '' : 'checked'}
+            checked
             aria-label="Select fix for ${escapeHtml(comment.path)}"
           />
           <div class="card-body">
