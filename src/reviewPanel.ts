@@ -382,8 +382,10 @@ export class ReviewPanel {
         <p>No pending Copilot review recommendations found for this PR.</p>
         <p class="empty-sub">Try a PR that has been reviewed by GitHub Copilot.</p>
       </div>`
-      : sortedComments.map(({ comment, workPlan, fileFound, complexity }, index) => {
+      : sortedComments.map(({ comment, workPlan, fileFound, complexity, warnings }, index) => {
         const fileNotFound = fileFound === false;
+        const hasWarnings = warnings && warnings.length > 0;
+        const warningTitle = hasWarnings ? warnings!.join('\n') : '';
         const linkHref = safeGithubUrl(comment.htmlUrl);
         const linkHtml = linkHref
           ? `<a class="comment-link" href="${linkHref}" target="_blank">View on GitHub ↗</a>`
@@ -407,6 +409,7 @@ export class ReviewPanel {
               <span class="line-num">line ${comment.line}</span>
               <span class="complexity-badge complexity-${complexityLevel}" title="Complexity: ${complexityLevel}">${complexityLabel}</span>
               ${fileNotFound ? '<span class="badge badge-warning" title="This file does not exist in the current workspace. The fix cannot be applied automatically.">File not found locally</span>' : ''}
+              ${hasWarnings ? `<span class="badge badge-warning" title="${escapeHtml(warningTitle)}">⚠ Scope check</span>` : ''}
               ${linkHtml}
             </div>
             <details open>
