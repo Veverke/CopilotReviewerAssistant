@@ -41,6 +41,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   fetchCopilotComments,
+  fetchCurrentUser,
+  fetchHasCopilotReview,
   fetchOpenPullRequests,
   fetchPrState,
   fetchPrDetails,
@@ -86,19 +88,20 @@ describe('fetchCopilotComments', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
   afterEach(() => vi.unstubAllGlobals());
 
-  it('returns copilot comments and filters out others', async () => {
+  it('returns all comments from all reviewers with reviewer field set', async () => {
     const copilot = makeRawComment();
     const human = makeRawComment({ id: 2, user: { login: 'human-dev' } });
     vi.mocked(fetch).mockResolvedValueOnce(makeResponse([copilot, human]));
 
     const { comments, outdatedCount } = await fetchCopilotComments('tok', 'o', 'r', 1);
 
-    expect(comments).toHaveLength(1);
-    expect(comments[0].id).toBe(1);
+    expect(comments).toHaveLength(2);
+    expect(comments[0].reviewer).toBe('copilot-pull-request-reviewer[bot]');
+    expect(comments[1].reviewer).toBe('human-dev');
     expect(outdatedCount).toBe(0);
   });
 
-  it('recognises all explicit copilot login aliases', async () => {
+  it('sets reviewer field from user.login for all known copilot aliases', async () => {
     const aliases = [
       'copilot-pull-request-reviewer[bot]',
       'github-copilot[bot]',
@@ -113,15 +116,17 @@ describe('fetchCopilotComments', () => {
       );
       const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
       expect(comments).toHaveLength(1);
+      expect(comments[0].reviewer).toBe(login);
     }
   });
 
-  it('rejects logins that merely contain "copilot" but are not in the explicit allowlist', async () => {
+  it('includes comments from logins that merely resemble copilot but are not in the explicit allowlist', async () => {
     const comment = makeRawComment({ user: { login: 'myCopilot-internal[bot]' } });
     vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
 
     const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
-    expect(comments).toHaveLength(0);
+    expect(comments).toHaveLength(1);
+    expect(comments[0].reviewer).toBe('myCopilot-internal[bot]');
   });
 
   it('skips and counts outdated comments (position=null, subject_type=line)', async () => {
@@ -452,16 +457,22 @@ describe('fetchOpenPullRequests', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
   afterEach(() => vi.unstubAllGlobals());
 
-  function makePrItem(n: number) {
-    return { number: n, title: `PR ${n}`, html_url: `https://github.com/o/r/pull/${n}` };
+  function makePrItem(n: number, authorLogin = 'author', assigneeLogins: string[] = []) {
+    return {
+      number: n,
+      title: `PR ${n}`,
+      html_url: `https://github.com/o/r/pull/${n}`,
+      assignees: assigneeLogins.map((login) => ({ login })),
+      user: { login: authorLogin },
+    };
   }
 
   it('returns mapped OpenPr objects for a successful response', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(makeResponse([makePrItem(1), makePrItem(2)]));
     const prs = await fetchOpenPullRequests('tok', 'o', 'r');
     expect(prs).toHaveLength(2);
-    expect(prs[0]).toEqual({ pullNumber: 1, title: 'PR 1', htmlUrl: 'https://github.com/o/r/pull/1' });
-    expect(prs[1]).toEqual({ pullNumber: 2, title: 'PR 2', htmlUrl: 'https://github.com/o/r/pull/2' });
+    expect(prs[0]).toEqual({ owner: 'o', repo: 'r', pullNumber: 1, title: 'PR 1', htmlUrl: 'https://github.com/o/r/pull/1' });
+    expect(prs[1]).toEqual({ owner: 'o', repo: 'r', pullNumber: 2, title: 'PR 2', htmlUrl: 'https://github.com/o/r/pull/2' });
   });
 
   it('returns an empty array for an empty list', async () => {
@@ -480,13 +491,219 @@ describe('fetchOpenPullRequests', () => {
     await expect(fetchOpenPullRequests('tok', 'o', 'r')).rejects.toThrow('Network error while contacting GitHub');
   });
 
-  it('requests the open PRs endpoint with the correct URL', async () => {
+  it('requests the open PRs endpoint with state=open and no extra params', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(makeResponse([]));
     await fetchOpenPullRequests('tok', 'owner', 'repo');
     expect(fetch).toHaveBeenCalledWith(
       'https://api.github.com/repos/owner/repo/pulls?state=open&per_page=100',
       expect.anything()
     );
+  });
+
+  it('returns all PRs when currentUser is not provided', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([makePrItem(1, 'alice'), makePrItem(2, 'bob')]));
+    const prs = await fetchOpenPullRequests('tok', 'o', 'r');
+    expect(prs).toHaveLength(2);
+  });
+
+  it('filters to PRs authored by the currentUser', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse([makePrItem(1, 'alice'), makePrItem(2, 'bob')])
+    );
+    const prs = await fetchOpenPullRequests('tok', 'o', 'r', 'alice');
+    expect(prs).toHaveLength(1);
+    expect(prs[0].pullNumber).toBe(1);
+  });
+
+  it('filters to PRs where the currentUser is an assignee', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse([makePrItem(1, 'alice', ['bob']), makePrItem(2, 'alice', ['carol'])])
+    );
+    const prs = await fetchOpenPullRequests('tok', 'o', 'r', 'bob');
+    expect(prs).toHaveLength(1);
+    expect(prs[0].pullNumber).toBe(1);
+  });
+
+  it('includes a PR where the currentUser is both author and assignee', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse([makePrItem(1, 'alice', ['alice'])])
+    );
+    const prs = await fetchOpenPullRequests('tok', 'o', 'r', 'alice');
+    expect(prs).toHaveLength(1);
+  });
+
+  it('returns empty array when no PRs match the currentUser', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse([makePrItem(1, 'alice'), makePrItem(2, 'bob')])
+    );
+    const prs = await fetchOpenPullRequests('tok', 'o', 'r', 'charlie');
+    expect(prs).toHaveLength(0);
+  });
+
+  it('does not append any query params beyond state and per_page', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([]));
+    await fetchOpenPullRequests('tok', 'owner', 'repo', 'octocat');
+    const calledUrl = vi.mocked(fetch).mock.calls[0][0] as string;
+    expect(calledUrl).toBe('https://api.github.com/repos/owner/repo/pulls?state=open&per_page=100');
+  });
+
+  it('filterMode "created" returns only PRs authored by the current user', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse([makePrItem(1, 'alice', ['bob']), makePrItem(2, 'bob')])
+    );
+    const prs = await fetchOpenPullRequests('tok', 'o', 'r', 'alice', 'created');
+    expect(prs).toHaveLength(1);
+    expect(prs[0].pullNumber).toBe(1);
+  });
+
+  it('filterMode "created" excludes PRs where user is only an assignee', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse([makePrItem(1, 'bob', ['alice'])])
+    );
+    const prs = await fetchOpenPullRequests('tok', 'o', 'r', 'alice', 'created');
+    expect(prs).toHaveLength(0);
+  });
+
+  it('filterMode "assigned" returns only PRs where user is an assignee', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse([makePrItem(1, 'alice', ['alice']), makePrItem(2, 'alice', ['bob'])])
+    );
+    const prs = await fetchOpenPullRequests('tok', 'o', 'r', 'alice', 'assigned');
+    expect(prs).toHaveLength(1);
+    expect(prs[0].pullNumber).toBe(1);
+  });
+
+  it('filterMode "assigned" excludes PRs where user is only the author', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse([makePrItem(1, 'alice', [])])
+    );
+    const prs = await fetchOpenPullRequests('tok', 'o', 'r', 'alice', 'assigned');
+    expect(prs).toHaveLength(0);
+  });
+});
+
+// ─── fetchHasCopilotReview ────────────────────────────────────────────────
+
+describe('fetchHasCopilotReview', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  function makeReview(login: string, state: string) {
+    return { user: { login }, state };
+  }
+
+  it('returns true when a known Copilot bot has a CHANGES_REQUESTED review', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse([makeReview('copilot-pull-request-reviewer[bot]', 'CHANGES_REQUESTED')])
+    );
+    expect(await fetchHasCopilotReview('tok', 'o', 'r', 1)).toBe(true);
+  });
+
+  it('returns true when a known Copilot bot has a COMMENTED review', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse([makeReview('github-copilot[bot]', 'COMMENTED')])
+    );
+    expect(await fetchHasCopilotReview('tok', 'o', 'r', 1)).toBe(true);
+  });
+
+  it('returns false when the only Copilot review is APPROVED', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse([makeReview('copilot-pull-request-reviewer[bot]', 'APPROVED')])
+    );
+    expect(await fetchHasCopilotReview('tok', 'o', 'r', 1)).toBe(false);
+  });
+
+  it('returns false when the only Copilot review is DISMISSED', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse([makeReview('copilot-pull-request-reviewer[bot]', 'DISMISSED')])
+    );
+    expect(await fetchHasCopilotReview('tok', 'o', 'r', 1)).toBe(false);
+  });
+
+  it('returns false when there are no reviews at all', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([]));
+    expect(await fetchHasCopilotReview('tok', 'o', 'r', 1)).toBe(false);
+  });
+
+  it('returns false when reviews are only from human users', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse([makeReview('human-dev', 'CHANGES_REQUESTED')])
+    );
+    expect(await fetchHasCopilotReview('tok', 'o', 'r', 1)).toBe(false);
+  });
+
+  it('returns true when an additional bot login has a CHANGES_REQUESTED review', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      makeResponse([makeReview('my-custom-bot', 'CHANGES_REQUESTED')])
+    );
+    expect(await fetchHasCopilotReview('tok', 'o', 'r', 1, ['my-custom-bot'])).toBe(true);
+  });
+
+  it('returns false on a non-ok response (does not throw)', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse({}, 403));
+    expect(await fetchHasCopilotReview('tok', 'o', 'r', 1)).toBe(false);
+  });
+
+  it('returns false on a network error (does not throw)', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetch)
+        .mockRejectedValueOnce(new Error('down'))
+        .mockRejectedValueOnce(new Error('down'));
+      const p = fetchHasCopilotReview('tok', 'o', 'r', 1);
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(await p).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('calls the /reviews endpoint URL', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([]));
+    await fetchHasCopilotReview('tok', 'owner', 'repo', 42);
+    expect(fetch).toHaveBeenCalledWith(
+      'https://api.github.com/repos/owner/repo/pulls/42/reviews?per_page=100',
+      expect.anything()
+    );
+  });
+});
+
+// ─── fetchCurrentUser ─────────────────────────────────────────────────────────
+
+describe('fetchCurrentUser', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('returns the login of the authenticated user', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse({ login: 'octocat' }));
+    const login = await fetchCurrentUser('tok');
+    expect(login).toBe('octocat');
+  });
+
+  it('requests the /user endpoint', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse({ login: 'octocat' }));
+    await fetchCurrentUser('tok');
+    expect(fetch).toHaveBeenCalledWith('https://api.github.com/user', expect.anything());
+  });
+
+  it('returns null on a non-ok response', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse({}, 401));
+    const login = await fetchCurrentUser('tok');
+    expect(login).toBeNull();
+  });
+
+  it('returns null on a network error', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetch)
+        .mockRejectedValueOnce(new Error('down'))
+        .mockRejectedValueOnce(new Error('down'));
+      const resultPromise = fetchCurrentUser('tok');
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(await resultPromise).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -496,25 +713,28 @@ describe('isCopilotBot trust-bypass prevention', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
   afterEach(() => vi.unstubAllGlobals());
 
-  it('rejects a login that merely contains "copilot" (mycopilot)', async () => {
+  it('includes a login that merely contains "copilot" (mycopilot) since all comments are returned', async () => {
     const comment = makeRawComment({ user: { login: 'mycopilot' } });
     vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
     const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
-    expect(comments).toHaveLength(0);
+    expect(comments).toHaveLength(1);
+    expect(comments[0].reviewer).toBe('mycopilot');
   });
 
-  it('rejects "notcopilot"', async () => {
+  it('includes "notcopilot" login since all comments are returned', async () => {
     const comment = makeRawComment({ user: { login: 'notcopilot' } });
     vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
     const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
-    expect(comments).toHaveLength(0);
+    expect(comments).toHaveLength(1);
+    expect(comments[0].reviewer).toBe('notcopilot');
   });
 
-  it('rejects "Copilot-evil[bot]"', async () => {
+  it('includes "Copilot-evil[bot]" login since all comments are returned', async () => {
     const comment = makeRawComment({ user: { login: 'Copilot-evil[bot]' } });
     vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
     const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
-    expect(comments).toHaveLength(0);
+    expect(comments).toHaveLength(1);
+    expect(comments[0].reviewer).toBe('Copilot-evil[bot]');
   });
 
   it('accepts a login that is in additionalBotLogins', async () => {
@@ -524,11 +744,12 @@ describe('isCopilotBot trust-bypass prevention', () => {
     expect(comments).toHaveLength(1);
   });
 
-  it('does not accept via additionalBotLogins when login does not exactly match', async () => {
+  it('returns comment when login does not match additionalBotLogins since all comments are returned', async () => {
     const comment = makeRawComment({ user: { login: 'my-custom-bot-v2[bot]' } });
     vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
     const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1, undefined, ['my-custom-bot[bot]']);
-    expect(comments).toHaveLength(0);
+    expect(comments).toHaveLength(1);
+    expect(comments[0].reviewer).toBe('my-custom-bot-v2[bot]');
   });
 });
 

@@ -5,6 +5,7 @@ export interface ReviewComment {
   body: string;
   diffHunk: string;
   htmlUrl: string;
+  reviewer: string;
 }
 
 export interface PrMetadata {
@@ -26,7 +27,7 @@ interface GitHubPrComment {
   html_url: string;
   user: {
     login: string;
-  };
+  } | null;
 }
 
 const COPILOT_BOT_LOGIN = 'copilot-pull-request-reviewer[bot]';
@@ -52,6 +53,35 @@ function isCopilotBot(login: string, additionalLogins: readonly string[] = []): 
   }
   // Check user-configured additional bot logins (explicit allowlist only — no regex)
   return additionalLogins.includes(login);
+}
+
+/**
+ * Returns a human-readable display name for a reviewer login.
+ * Known Copilot bot accounts are shown as "Copilot"; other bot accounts have
+ * the "[bot]" suffix replaced with " (bot)".
+ */
+export function reviewerDisplayName(login: string): string {
+  if (COPILOT_BOT_LOGINS.has(login)) { return 'Copilot'; }
+  return login.replace('[bot]', ' (bot)').replace(/ \(bot\)$/, ' (bot)').trim();
+}
+
+async function fetchUserDisplayNames(
+  token: string,
+  logins: string[],
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  await Promise.allSettled(
+    logins.map(async (login) => {
+      const resp = await fetch(`https://api.github.com/users/${encodeURIComponent(login)}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+      });
+      if (resp.ok) {
+        const data = await resp.json() as { login: string; name?: string | null };
+        map.set(login, data.name?.trim() || login);
+      }
+    }),
+  );
+  return map;
 }
 
 async function fetchWithRetry(url: string, options: RequestInit): Promise<Response> {
@@ -140,22 +170,20 @@ export async function fetchCopilotComments(
     totalSeen += items.length;
 
     for (const c of items) {
-      if (!isCopilotBot(c.user.login, additionalBotLogins)) {
-        continue;
-      }
       if (c.subject_type === 'line' && c.position === null) {
         outdatedCount++;
         outputChannel?.appendLine(`[githubApi] skipped outdated comment id=${c.id}`);
         continue;
       }
-      outputChannel?.appendLine(`[githubApi] id=${c.id} path="${c.path}"`);
+      outputChannel?.appendLine(`[githubApi] id=${c.id} reviewer=${c.user?.login ?? '(unknown)'} path="${c.path}"`);
       all.push({
         id: c.id,
-        path: c.path,
+        path: c.path ?? '',
         line: c.line ?? c.original_line ?? 0,
-        body: c.body,
-        diffHunk: c.diff_hunk,
+        body: c.body ?? '',
+        diffHunk: c.diff_hunk ?? '',
         htmlUrl: c.html_url,
+        reviewer: c.user?.login ?? '',
       });
     }
 
@@ -165,7 +193,20 @@ export async function fetchCopilotComments(
     page++;
   }
 
-  outputChannel?.appendLine(`[githubApi] total inline comments: ${totalSeen}, Copilot comments: ${all.length}, outdated skipped: ${outdatedCount}`);
+  outputChannel?.appendLine(`[githubApi] total inline comments: ${totalSeen}, returned: ${all.length}, outdated skipped: ${outdatedCount}`);
+
+  // Resolve display names for non-bot reviewers in parallel.
+  // Bots already have a fixed display name from reviewerDisplayName().
+  const uniqueHumanLogins = [...new Set(
+    all.map((c) => c.reviewer).filter((login) => login && !COPILOT_BOT_LOGINS.has(login) && !login.endsWith('[bot]'))
+  )];
+  const displayNames = await fetchUserDisplayNames(token, uniqueHumanLogins);
+  for (const c of all) {
+    if (displayNames.has(c.reviewer)) {
+      c.reviewer = displayNames.get(c.reviewer)!;
+    }
+  }
+
   return { comments: all, outdatedCount };
 }
 
@@ -236,7 +277,11 @@ export async function fetchPrState(
 
 // ─── List open pull requests ───────────────────────────────────────────────────
 
+export type PrFilterMode = 'both' | 'created' | 'assigned';
+
 export interface OpenPr {
+  owner: string;
+  repo: string;
   pullNumber: number;
   title: string;
   htmlUrl: string;
@@ -246,12 +291,34 @@ interface GitHubPrListItem {
   number: number;
   title: string;
   html_url: string;
+  assignees: Array<{ login: string }>;
+  user: { login: string };
+}
+
+export async function fetchCurrentUser(token: string): Promise<string | null> {
+  const url = 'https://api.github.com/user';
+  try {
+    const response = await fetchWithRetry(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    if (!response.ok) { return null; }
+    const data = await response.json() as { login: string };
+    return data.login ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchOpenPullRequests(
   token: string,
   owner: string,
-  repo: string
+  repo: string,
+  currentUser?: string,
+  filterMode: PrFilterMode = 'both'
 ): Promise<OpenPr[]> {
   const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=open&per_page=100`;
   let response: Response;
@@ -275,18 +342,67 @@ export async function fetchOpenPullRequests(
     throw new Error('Access denied. Ensure your GitHub account has access to this repository.');
   }
   if (response.status === 404) {
-    throw new Error('Repository not found: check the owner/repo and that you have access.');
+    throw new Error('Repository not found: check the owner/repo in your extension settings and ensure your token has access.');
   }
   if (!response.ok) {
     throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
   }
 
   const items = await response.json() as GitHubPrListItem[];
-  return items.map((pr) => ({
+  const filtered = currentUser
+    ? items.filter((pr) => {
+        if (filterMode === 'created') { return pr.user.login === currentUser; }
+        if (filterMode === 'assigned') { return pr.assignees.some((a) => a.login === currentUser); }
+        return pr.user.login === currentUser || pr.assignees.some((a) => a.login === currentUser);
+      })
+    : items;
+  return filtered.map((pr) => ({
+    owner,
+    repo,
     pullNumber: pr.number,
     title: pr.title,
     htmlUrl: pr.html_url,
   }));
+}
+
+// ─── Check for open Copilot reviews ─────────────────────────────────────────────
+
+interface GitHubReviewItem {
+  user: { login: string };
+  state: string;
+}
+
+/**
+ * Returns true if the PR has at least one non-dismissed Copilot review
+ * (state is CHANGES_REQUESTED or COMMENTED). Returns false on any error so the
+ * PR is silently excluded rather than crashing the list.
+ */
+export async function fetchHasCopilotReview(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  additionalBotLogins: readonly string[] = []
+): Promise<boolean> {
+  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/reviews?per_page=100`;
+  try {
+    const response = await fetchWithRetry(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    if (!response.ok) { return false; }
+    const reviews = await response.json() as GitHubReviewItem[];
+    return reviews.some(
+      (r) =>
+        isCopilotBot(r.user.login, additionalBotLogins) &&
+        (r.state === 'CHANGES_REQUESTED' || r.state === 'COMMENTED')
+    );
+  } catch {
+    return false;
+  }
 }
 
 // ─── Reply to a PR review comment ─────────────────────────────────────────────

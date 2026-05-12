@@ -3,7 +3,7 @@
   "displayName": "Copilot Reviewer Assistant",
   "description": "GitHub Copilot review suggestions don't always come with an 'Apply' button. This extension fills that gap — fetch every pending Copilot review comment and apply all fixes automatically, straight from VS Code.",
   "version": "1.5.0",
-  "publisher": "Veverke",
+  "publisher": "Avraham Y. Kahana",
   "icon": "media/icon.png",
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
@@ -35,7 +35,7 @@
       },
       {
         "command": "copilotReviewer.clearPat",
-        "title": "Copilot Reviewer: Clear Stored GitHub PAT"
+        "title": "Copilot Reviewer: Clear Stored GitHub Authentication"
       }
     ],
     "configuration": {
@@ -52,6 +52,17 @@
           "type": "boolean",
           "default": false,
           "description": "When true, automatically reads the clipboard to pre-fill the PR URL input box if a GitHub PR URL is detected."
+        },
+        "copilotReviewer.prFilter": {
+          "type": "string",
+          "enum": ["both", "created", "assigned"],
+          "enumDescriptions": [
+            "Show open PRs you authored or are assigned to (default).",
+            "Show only open PRs you created.",
+            "Show only open PRs you are assigned to."
+          ],
+          "default": "assigned",
+          "description": "Controls which open pull requests are shown in the PR picker. Only PRs matching the filter AND having open Copilot review comments are displayed."
         }
       }
     }

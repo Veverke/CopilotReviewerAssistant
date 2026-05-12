@@ -73,6 +73,7 @@ function makeComment(id = 1): ReviewComment {
     body: 'Use const instead of let',
     diffHunk: '@@ -1,1 +1,1 @@',
     htmlUrl: 'https://github.com/owner/repo/pull/1#comment-1',
+    reviewer: 'copilot-pull-request-reviewer[bot]',
   };
 }
 

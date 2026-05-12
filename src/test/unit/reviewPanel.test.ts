@@ -7,14 +7,6 @@
  *    - leaves plain text untouched
  *    - escapes all special characters in one string
  *
- *  workPlanToHtml()
- *    - converts numbered list lines to <ol><li>...</li></ol>
- *    - escapes HTML in each list item
- *    - ignores non-list lines when list items exist
- *    - falls back to <p>...</p> when no numbered lines
- *    - escapes content inside the <p> fallback
- *    - filters out blank lines before checking for numbered items
- *
  *  safeGithubUrl()
  *    - returns the escaped URL for a valid https github.com URL
  *    - returns null for http (non-https) URLs
@@ -28,7 +20,7 @@ import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('vscode', () => ({}));
 
-import { escapeHtml, workPlanToHtml, safeGithubUrl } from '../../reviewPanel';
+import { escapeHtml, safeGithubUrl } from '../../reviewPanel';
 
 // ─── escapeHtml ───────────────────────────────────────────────────────────────
 
@@ -61,47 +53,6 @@ describe('escapeHtml', () => {
     expect(escapeHtml('<a href="x">it\'s & fun</a>')).toBe(
       '&lt;a href=&quot;x&quot;&gt;it&#39;s &amp; fun&lt;/a&gt;'
     );
-  });
-});
-
-// ─── workPlanToHtml ───────────────────────────────────────────────────────────
-
-describe('workPlanToHtml', () => {
-  it('wraps numbered list lines in <ol><li>', () => {
-    const html = workPlanToHtml('1. First step\n2. Second step');
-    expect(html).toBe('<ol><li>First step</li><li>Second step</li></ol>');
-  });
-
-  it('escapes HTML in each list item', () => {
-    const html = workPlanToHtml('1. Use <b>bold</b> & "quotes"');
-    expect(html).toContain('&lt;b&gt;bold&lt;/b&gt;');
-    expect(html).toContain('&amp;');
-    expect(html).toContain('&quot;');
-  });
-
-  it('falls back to <p> when there are no numbered lines', () => {
-    const html = workPlanToHtml('Just a plain sentence.');
-    expect(html).toBe('<p>Just a plain sentence.</p>');
-  });
-
-  it('escapes content inside the <p> fallback', () => {
-    const html = workPlanToHtml('<script>alert(1)</script>');
-    expect(html).toBe('<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>');
-  });
-
-  it('ignores lines without a number prefix when building the list', () => {
-    const html = workPlanToHtml('Header\n1. step one\n2. step two');
-    expect(html).toBe('<ol><li>step one</li><li>step two</li></ol>');
-  });
-
-  it('handles a single numbered step', () => {
-    const html = workPlanToHtml('1. Only step');
-    expect(html).toBe('<ol><li>Only step</li></ol>');
-  });
-
-  it('strips leading/trailing blank lines from items', () => {
-    const html = workPlanToHtml('\n1. Step one\n\n2. Step two\n');
-    expect(html).toBe('<ol><li>Step one</li><li>Step two</li></ol>');
   });
 });
 

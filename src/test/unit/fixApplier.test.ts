@@ -60,6 +60,7 @@ function makeAnnotated(overrides: Partial<AnnotatedComment['comment']> = {}): An
       body: 'Use const',
       diffHunk: '@@ -1 +1 @@',
       htmlUrl: 'https://github.com/owner/repo/pull/1#comment-1',
+      reviewer: 'copilot-pull-request-reviewer[bot]',
       ...overrides,
     },
     workPlan: '1. Replace let with const',

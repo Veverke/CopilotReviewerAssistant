@@ -1101,3 +1101,47 @@ a:focus-visible {
   max-width: 480px;
   text-align: center;
 }
+
+/* ─── Reviewer filter row ────────────────────────────────────────────────── */
+
+.reviewer-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 6px;
+  border-top: 1px solid var(--vscode-panel-border);
+  margin-top: 6px;
+}
+
+.reviewer-filter-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.reviewer-check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-size: 0.85em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  user-select: none;
+}
+
+.reviewer-check-label:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.reviewer-check-label input[type="checkbox"] {
+  margin: 0;
+}
+
+.card.reviewer-hidden {
+  display: none !important;
+}

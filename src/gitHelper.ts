@@ -1,7 +1,9 @@
-import * as vscode from 'vscode';
-import * as fs from 'fs';
+import { execFile } from 'child_process';
 import * as path from 'path';
-import * as cp from 'child_process';
+import { promisify } from 'util';
+import * as vscode from 'vscode';
+
+const execFileAsync = promisify(execFile);
 
 // ─── Git extension API minimal interfaces ────────────────────────────────────
 
@@ -25,175 +27,18 @@ interface Repository {
   state: {
     remotes: GitRemote[];
   };
-  add(resources: vscode.Uri[]): Promise<void>;
   commit(message: string): Promise<void>;
   push(): Promise<void>;
 }
 
-// ─── Build detection & execution ────────────────────────────────────────────
-
-export type BuildResult =
-  | { ok: true; skipped?: true; reason?: string }
-  | { ok: false; reason: string; details: string };
-
 // ─── Status type used by ReviewPanel to update the Webview ───────────────────
 
 export type GitStatus =
-  | { state: 'building'; command?: string }
-  | { state: 'build-failed'; reason: string; details: string }
-  | { state: 'build-succeeded' }
   | { state: 'pushing' }
   | { state: 'pushed' }
   | { state: 'push-failed'; reason: string }
-  | { state: 'no-repo' };
-
-/** Allowlist of executables permitted as build commands. */
-const ALLOWED_BUILD_EXECUTABLES = new Set([
-  'npm', 'npx', 'go', 'cargo', 'dotnet', 'mvn', 'python', 'pyright',
-  'gradlew', 'gradlew.bat', './gradlew',
-]);
-
-/**
- * Splits a build command string into an executable + args array.
- * Returns undefined if the executable is not in the allowlist.
- */
-export function splitBuildCommand(cmd: string): { executable: string; args: string[] } | undefined {
-  const parts = cmd.trim().split(/\s+/);
-  if (parts.length === 0) {
-    return undefined;
-  }
-  const rawExec = parts[0];
-  if (!ALLOWED_BUILD_EXECUTABLES.has(rawExec)) {
-    return undefined;
-  }
-  return { executable: rawExec, args: parts.slice(1) };
-}
-
-/** Returns the shell command to build the project at `rootPath`, or undefined if unrecognised. */
-export function detectBuildCommand(rootPath: string): string | undefined {
-  // 1. package.json scripts (JS/TS/Node)
-  const pkgPath = path.join(rootPath, 'package.json');
-  if (fs.existsSync(pkgPath)) {
-    try {
-      const pkg: unknown = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-      if (
-        typeof pkg === 'object' && pkg !== null &&
-        typeof (pkg as Record<string, unknown>).scripts === 'object' &&
-        (pkg as Record<string, unknown>).scripts !== null
-      ) {
-        const scripts = (pkg as { scripts: Record<string, unknown> }).scripts;
-        for (const name of ['build', 'compile', 'typecheck', 'type-check']) {
-          if (typeof scripts[name] === 'string' && scripts[name]) {
-            return `npm run ${name}`;
-          }
-        }
-      }
-    } catch {
-      // malformed package.json – fall through
-    }
-  }
-
-  // 2. tsconfig.json only (no matching npm script found)
-  if (fs.existsSync(path.join(rootPath, 'tsconfig.json'))) {
-    return 'npx tsc --noEmit';
-  }
-
-  // 3. Go
-  if (fs.existsSync(path.join(rootPath, 'go.mod'))) {
-    return 'go build ./...';
-  }
-
-  // 4. Python — prefer static type-checker if configured, otherwise skip
-  if (
-    fs.existsSync(path.join(rootPath, 'pyrightconfig.json')) ||
-    fs.existsSync(path.join(rootPath, '.pyrightconfig.json'))
-  ) {
-    return 'pyright';
-  }
-  if (
-    fs.existsSync(path.join(rootPath, 'mypy.ini')) ||
-    fs.existsSync(path.join(rootPath, '.mypy.ini'))
-  ) {
-    return 'python -m mypy .';
-  }
-  // pyproject.toml with a [tool.mypy] or [tool.pyright] section
-  const pyrootPkg = path.join(rootPath, 'pyproject.toml');
-  if (fs.existsSync(pyrootPkg)) {
-    try {
-      const pyproj = fs.readFileSync(pyrootPkg, 'utf8');
-      if (/\[tool\.mypy\]/.test(pyproj)) { return 'python -m mypy .'; }
-      if (/\[tool\.pyright\]/.test(pyproj)) { return 'pyright'; }
-    } catch {
-      // fall through
-    }
-  }
-
-  // 5. .NET (solution or project files)
-  const rootEntries = fs.readdirSync(rootPath);
-  if (rootEntries.some((f) => f.endsWith('.sln') || f.endsWith('.csproj'))) {
-    return 'dotnet build --nologo -q';
-  }
-
-  // 6. Rust
-  if (fs.existsSync(path.join(rootPath, 'Cargo.toml'))) {
-    return 'cargo check';
-  }
-
-  // 7. Maven
-  if (fs.existsSync(path.join(rootPath, 'pom.xml'))) {
-    return 'mvn compile -q';
-  }
-
-  // 8. Gradle
-  if (
-    fs.existsSync(path.join(rootPath, 'build.gradle')) ||
-    fs.existsSync(path.join(rootPath, 'build.gradle.kts'))
-  ) {
-    const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
-    return `${gradlew} build`;
-  }
-
-  return undefined;
-}
-
-export async function buildProject(outputChannel?: { appendLine(value: string): void }): Promise<BuildResult> {
-  const workspaceFolders = vscode.workspace.workspaceFolders;
-  if (!workspaceFolders || workspaceFolders.length === 0) {
-    return { ok: true, skipped: true, reason: 'No workspace folder open' };
-  }
-
-  const rootPath = workspaceFolders[0].uri.fsPath;
-  const cmd = detectBuildCommand(rootPath);
-
-  if (!cmd) {
-    outputChannel?.appendLine('[build] No recognised build system found — skipping build step.');
-    return { ok: true, skipped: true, reason: 'No recognised build system found in workspace root' };
-  }
-
-  outputChannel?.appendLine(`[build] Detected build command: ${cmd}`);
-  outputChannel?.appendLine(`[build] Working directory: ${rootPath}`);
-
-  return new Promise((resolve) => {
-    // Use exec (runs via the shell) so .cmd wrappers (npm.cmd, npx.cmd) are
-    // found on Windows without requiring the full extension in the command string.
-    cp.exec(cmd, { cwd: rootPath, timeout: 120_000 }, (error, stdout, stderr) => {
-      if (stdout.trim()) {
-        outputChannel?.appendLine('[build:stdout] ' + stdout.trimEnd());
-      }
-      if (stderr.trim()) {
-        outputChannel?.appendLine('[build:stderr] ' + stderr.trimEnd());
-      }
-      if (error) {
-        const details = (stderr.trim() || stdout.trim() || error.message).slice(0, 3000);
-        outputChannel?.appendLine(`[build] FAILED (exit ${error.code ?? 'unknown'}): ${error.message}`);
-        resolve({ ok: false, reason: 'Build failed — see Output panel for details', details });
-      } else {
-        outputChannel?.appendLine('[build] Succeeded.');
-        resolve({ ok: true });
-      }
-    });
-  });
-}
+  | { state: 'no-repo' }
+  | { state: 'ready' };
 
 // ─── Internals ────────────────────────────────────────────────────────────────
 
@@ -237,33 +82,89 @@ async function getActiveRepository(): Promise<Repository | undefined> {
   );
 }
 
+/**
+ * Finds the local git repository whose GitHub remote matches the given
+ * owner/repo. Returns the rootUri.fsPath of that repository, or undefined
+ * if no match is found.
+ */
+async function findRepositoryRoot(owner: string, repo: string): Promise<string | undefined> {
+  const git = await getGitAPI();
+  if (!git) { return undefined; }
+  for (const r of git.repositories) {
+    const remotes = r.state?.remotes ?? [];
+    for (const remote of remotes) {
+      const url = remote.fetchUrl ?? remote.pushUrl ?? '';
+      const m = url.match(GITHUB_REMOTE_PATTERN);
+      if (m && m[1].toLowerCase() === owner.toLowerCase() && m[2].toLowerCase() === repo.toLowerCase()) {
+        return r.rootUri.fsPath;
+      }
+    }
+  }
+  return undefined;
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-export async function stageFiles(paths: string[]): Promise<void> {
-  const repo = await getActiveRepository();
-  if (!repo) {
-    throw new Error('Git repository not found');
+export async function stageFiles(
+  paths: string[],
+  owner: string,
+  repo: string,
+  outputChannel?: { appendLine(value: string): void },
+): Promise<void> {
+  // Find the local repo that matches the PR being reviewed — not just the
+  // first workspace folder, which could be a completely different service.
+  let rootFsPath = await findRepositoryRoot(owner, repo);
+  if (!rootFsPath) {
+    // Fallback: use the active repository (matches workspace folder)
+    const activeRepo = await getActiveRepository();
+    if (!activeRepo) { throw new Error('Git repository not found'); }
+    rootFsPath = activeRepo.rootUri.fsPath;
   }
-  const uris = paths.map((p) => vscode.Uri.joinPath(repo.rootUri, p));
-  await repo.add(uris);
+  outputChannel?.appendLine(`[stageFiles] rootFsPath="${rootFsPath}" (owner=${owner}, repo=${repo})`);
+  const validPaths = paths.filter((p): p is string => typeof p === 'string' && p.length > 0);
+  if (validPaths.length === 0) { return; }
+  const absPaths: string[] = [];
+  for (const p of validPaths) {
+    const abs = path.join(rootFsPath, p);
+    outputChannel?.appendLine(`[stageFiles] staging abs="${abs}"`);
+    absPaths.push(abs);
+  }
+  outputChannel?.appendLine(`[stageFiles] running git add for ${absPaths.length} path(s)`);
+  await execFileAsync('git', ['add', '--', ...absPaths], { cwd: rootFsPath });
+  outputChannel?.appendLine(`[stageFiles] git add succeeded`);
 }
 
-export async function commitChanges(filePaths: string[], commentCount: number): Promise<void> {
-  const repo = await getActiveRepository();
-  if (!repo) {
-    throw new Error('Git repository not found');
+export async function commitChanges(
+  filePaths: string[],
+  commentCount: number,
+  owner: string,
+  repo: string,
+  issues: string[] = [],
+  commitPrefix: string = '',
+): Promise<void> {
+  let rootFsPath = await findRepositoryRoot(owner, repo);
+  if (!rootFsPath) {
+    const activeRepo = await getActiveRepository();
+    if (!activeRepo) { throw new Error('Git repository not found'); }
+    rootFsPath = activeRepo.rootUri.fsPath;
   }
   const fileList = filePaths.map((p) => `- ${p}`).join('\n');
-  const message = `fix: apply ${commentCount} Copilot PR review recommendation(s)\n\nAffected files:\n${fileList}`;
-  await repo.commit(message);
+  const issueLines = issues.length > 0
+    ? '\n\nIssues fixed:\n' + issues.map((s, i) => `${i + 1}. ${s.slice(0, 120)}`).join('\n')
+    : '';
+  const body = `fix: apply ${commentCount} Copilot PR review recommendation(s)\n\nAffected files:\n${fileList}${issueLines}`;
+  const message = commitPrefix ? `${commitPrefix} ${body}` : body;
+  await execFileAsync('git', ['commit', '-m', message], { cwd: rootFsPath });
 }
 
-export async function pushChanges(): Promise<void> {
-  const repo = await getActiveRepository();
-  if (!repo) {
-    throw new Error('Git repository not found');
+export async function pushChanges(owner: string, repo: string): Promise<void> {
+  let rootFsPath = await findRepositoryRoot(owner, repo);
+  if (!rootFsPath) {
+    const activeRepo = await getActiveRepository();
+    if (!activeRepo) { throw new Error('Git repository not found'); }
+    rootFsPath = activeRepo.rootUri.fsPath;
   }
-  await repo.push();
+  await execFileAsync('git', ['push'], { cwd: rootFsPath });
 }
 
 // ─── Detect owner/repo from git remote ────────────────────────────────────────
@@ -287,4 +188,38 @@ export async function getRemoteOwnerRepo(): Promise<{ owner: string; repo: strin
     return undefined;
   }
   return { owner: match[1], repo: match[2] };
+}
+
+/**
+ * Returns the GitHub owner/repo coordinates for every git repository found in
+ * the current VS Code workspace. Useful for multi-root workspaces.
+ */
+export async function getAllRemoteOwnerRepos(): Promise<Array<{ owner: string; repo: string }>> {
+  const git = await getGitAPI();
+  if (!git) { return []; }
+
+  if (git.repositories.length === 0) {
+    await new Promise<void>((resolve) => {
+      let attempts = 0;
+      const interval = setInterval(() => {
+        attempts++;
+        if (git.repositories.length > 0 || attempts >= 30) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 100);
+    });
+  }
+
+  const results: Array<{ owner: string; repo: string }> = [];
+  for (const repository of git.repositories) {
+    const remotes = repository.state?.remotes ?? [];
+    const remote = remotes.find((r) => r.name === 'origin') ?? remotes[0];
+    if (!remote) { continue; }
+    const url = remote.fetchUrl ?? remote.pushUrl ?? '';
+    const match = url.match(GITHUB_REMOTE_PATTERN);
+    if (!match) { continue; }
+    results.push({ owner: match[1], repo: match[2] });
+  }
+  return results;
 }
