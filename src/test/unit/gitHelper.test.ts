@@ -175,11 +175,11 @@ describe('commitChanges', () => {
       makeGitExtension([repo]) as any
     );
 
-    await commitChanges(['src/foo.ts'], 1, TEST_OWNER, TEST_REPO, [], '[XLR-1234]');
+    await commitChanges(['src/foo.ts'], 1, TEST_OWNER, TEST_REPO, [], '[abc-12345]');
 
     const [, args] = vi.mocked(execFile).mock.calls[0] as unknown as [string, string[], ...any[]];
     const msgArg: string = args[2];
-    expect(msgArg.startsWith('[XLR-1234] fix:')).toBe(true);
+    expect(msgArg.startsWith('[abc-12345] fix:')).toBe(true);
   });
 
   it('does not prepend anything when commitPrefix is empty', async () => {

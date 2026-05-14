@@ -292,11 +292,11 @@ export function activate(context: vscode.ExtensionContext) {
 			const { owner, repo, pullNumber } = prCoordinates!;
 			const uniquePaths = [...new Set(doneResults.map((r) => r.commentPath))];
 
-			// Prompt for optional commit message prefix (e.g. [XLR-1234]) before doing any git work.
+			// Prompt for optional commit message prefix (e.g. [abc-12345]) before doing any git work.
 			const commitPrefix = await vscode.window.showInputBox({
 				title: 'Commit message prefix (optional)',
-				prompt: 'Enter text to prepend to the commit message if your repo enforces a policy (e.g. [XLR-1234]). Leave empty to skip.',
-				placeHolder: '[XLR-1234]',
+				prompt: 'Enter text to prepend to the commit message if your repo enforces a policy (e.g. [abc-12345]). Leave empty to skip.',
+				placeHolder: '[abc-12345]',
 				ignoreFocusOut: true,
 			});
 			// undefined means the user pressed Escape — cancel the push.
@@ -445,15 +445,32 @@ export function deactivate() {}
 // UNUSED SYMBOL issues are single-symbol renames/deletions → low.
 // Default → low.
 export function classifyComplexity(comment: import('./githubApi').ReviewComment): ComplexityScore {
-	const text = `${comment.body}\n${comment.diffHunk}`.toLowerCase();
-	if (/\blayer\b|\babstraction\b|\bcallback\b|\bsignature\b|\bcoupl/.test(text)) {
-		return 'high';
-	}
-	if (/\bregister\b|\bactivationevents?\b|\bcommand\b|\bdispatch\b|\bhandler\b|\bcontributes\b/.test(text)
-		|| /\bawait\b|\basync\b|promise\.all|readfilesync|fs\..*sync\b/.test(text)) {
-		return 'medium';
-	}
-	return 'low';
+	const body = comment.body.toLowerCase();
+	const diff = comment.diffHunk.toLowerCase();
+	const text = `${body}\n${diff}`;
+
+	let score = 0;
+
+	// Architectural / cross-cutting signals
+	if (/\blayer\b|\babstraction\b|\bcoupl/.test(text))                                   score += 3;
+	if (/\ball (callers?|usages?|sites?)\b|throughout/.test(text))                        score += 3;
+	if (/\brefactor\b|\bextract\b|\brestructure\b|\bdecouple\b/.test(text))               score += 2;
+
+	// Async / concurrency signals
+	if (/\bawait\b|\basync\b|promise\.all|readfilesync|fs\..*sync\b/.test(text))          score += 1;
+
+	// VS Code extension wiring (medium-weight — not architectural on its own)
+	if (/\bregister\b|\bactivationevents?\b|\bcommand\b|\bdispatch\b|\bhandler\b|\bcontributes\b/.test(text)) score += 1;
+
+	// Diff hunk size
+	const diffLines = comment.diffHunk.split('\n').filter(l => l.startsWith('+') || l.startsWith('-')).length;
+	if (diffLines > 15)     score += 2;
+	else if (diffLines > 5) score += 1;
+
+	// Simple mechanical changes — reduce score
+	if (/\brename\b|\btypo\b|\bunused\b|\bmissing import\b|\bformat\b/.test(body))        score -= 2;
+
+	return score >= 4 ? 'high' : score >= 2 ? 'medium' : 'low';
 }
 
 export function buildCopilotChatPrompt(comments: import('./githubApi').ReviewComment[]): string {
