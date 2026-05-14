@@ -106,6 +106,9 @@
   var COMPLEXITY_GROUP_ORDER = ['high', 'medium', 'low'];
   var COMPLEXITY_GROUP_LABELS = { high: 'High', medium: 'Medium', low: 'Low' };
 
+  var SEVERITY_GROUP_ORDER = ['critical', 'high', 'medium', 'low', ''];
+  var SEVERITY_GROUP_LABELS = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', '': 'Unknown' };
+
   function getAllCards() {
     return Array.from(document.querySelectorAll('.card[data-number]'));
   }
@@ -151,6 +154,13 @@
         groups[key].push(c);
       });
       groupOrder = COMPLEXITY_GROUP_ORDER.filter(function(k) { return groups[k] && groups[k].length > 0; });
+    } else if (currentGroup === 'severity') {
+      cards.forEach(function(c) {
+        var key = c.dataset.severity || '';
+        if (!groups[key]) { groups[key] = []; }
+        groups[key].push(c);
+      });
+      groupOrder = SEVERITY_GROUP_ORDER.filter(function(k) { return groups[k] && groups[k].length > 0; });
     }
 
     groupOrder.forEach(function(key) {
@@ -158,7 +168,9 @@
       var header = document.createElement('div');
       header.className = 'group-header' + (isCollapsed ? ' collapsed' : '');
       header.dataset.groupKey = key;
-      var label = currentGroup === 'complexity' ? (COMPLEXITY_GROUP_LABELS[key] || key) : key;
+      var label = currentGroup === 'complexity' ? (COMPLEXITY_GROUP_LABELS[key] || key)
+        : currentGroup === 'severity' ? (SEVERITY_GROUP_LABELS[key] || key)
+        : key;
       var visibleCount = groups[key].filter(function(c) { return !c.classList.contains('reviewer-hidden'); }).length;
       if (visibleCount === 0) { return; } // hide group if all cards are reviewer-filtered out
       header.innerHTML = '<span class="group-header-chevron">&#9660;</span>'
@@ -231,33 +243,35 @@
     });
   });
 
-  // ─── Fix with Copilot Chat button ────────────────────────────────────────────
+  // ─── Apply Fixes button ────────────────────────────────────────────────────
   if (fixChatBtn) {
     fixChatBtn.addEventListener('click', function () {
       fixChatBtn.disabled = true;
-      fixChatBtn.textContent = 'Opening Copilot Chat\u2026';
-      const selectedIds = getCheckboxes()
+      fixChatBtn.textContent = 'Applying\u2026';
+      var selectedIds = getCheckboxes()
         .filter(function(cb) { return cb.checked; })
         .map(function(cb) { return Number(cb.dataset.id); });
       vscode.postMessage({ command: 'fixWithCopilotChat', selectedIds: selectedIds });
-      setTimeout(function () {
+      // Block the panel until the user confirms all fixes are done in Copilot Chat.
+      // Push & Resolve is enabled only when the overlay is dismissed.
+      showApplyingOverlay(function onApplied() {
         fixChatBtn.disabled = false;
-        fixChatBtn.textContent = 'Fix with Copilot Chat';
-      }, 3000);
+        fixChatBtn.textContent = 'Apply Fixes';
+        if (stageCommitPushBtn) { stageCommitPushBtn.disabled = false; }
+      });
     });
   }
 
   // ─── Push & Mark Resolved button ─────────────────────────────────────────────
+  var pendingResolveIds = [];
+
   if (stageCommitPushBtn) {
     stageCommitPushBtn.addEventListener('click', function () {
-      const selectedIds = getCheckboxes()
+      pendingResolveIds = getCheckboxes()
         .filter(function(cb) { return cb.checked; })
         .map(function(cb) { return Number(cb.dataset.id); });
-      // Disable immediately to prevent double-click, but don't change text yet —
-      // the extension shows a confirmation dialog first, so we wait for the
-      // 'pushing' gitStatus message before updating the label.
       stageCommitPushBtn.disabled = true;
-      vscode.postMessage({ command: 'stageCommitAndPush', selectedIds: selectedIds });
+      vscode.postMessage({ command: 'stageCommitAndPush', selectedIds: pendingResolveIds });
     });
   }
 
@@ -289,8 +303,22 @@
       stageCommitPushBtn.textContent = 'Pushing\u2026';
       if (gitNotice) { gitNotice.classList.add('hidden'); }
     } else if (status.state === 'pushed') {
-      stageCommitPushBtn.textContent = 'Pushed \u2713';
-      stageCommitPushBtn.disabled = true;
+      // Remove the resolved cards from the DOM
+      pendingResolveIds.forEach(function(id) {
+        var card = document.querySelector('.card[data-id="' + id + '"]');
+        if (card) { card.parentNode.removeChild(card); }
+      });
+      pendingResolveIds = [];
+      // Re-render groups to clean up any now-empty group headers
+      if (currentGroup !== 'none') { renderGrouped(); }
+      updateSelectAll();
+      // Check whether any cards remain
+      if (getAllCards().length === 0) {
+        showAllResolvedState();
+      } else {
+        stageCommitPushBtn.textContent = 'Pushed \u2713';
+        stageCommitPushBtn.disabled = true;
+      }
       if (pushProgressDiv) {
         pushProgressDiv.classList.add('done');
         if (pushProgressLabel) { pushProgressLabel.textContent = 'Complete \u2713'; }
@@ -310,6 +338,47 @@
       stageCommitPushBtn.disabled = false;
       stageCommitPushBtn.textContent = 'Push & Mark Resolved';
     }
+  }
+
+  // ─── Applying-fixes overlay ───────────────────────────────────────────────
+  function showApplyingOverlay(onComplete) {
+    var existing = document.getElementById('fix-overlay');
+    if (existing) { existing.parentNode.removeChild(existing); }
+
+    var overlay = document.createElement('div');
+    overlay.id = 'fix-overlay';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', 'Applying fixes');
+    overlay.innerHTML =
+      '<div class="fix-overlay-card">' +
+        '<div class="fix-overlay-spinner" aria-hidden="true"></div>' +
+        '<p class="fix-overlay-msg">Applying Fixes\u2026</p>' +
+        '<p class="fix-overlay-sub">Switch to the Copilot Chat panel and wait for all fixes to be applied, then click the button below to continue.</p>' +
+        '<button class="fix-overlay-done-btn" id="fix-overlay-done-btn">Mark as Applied</button>' +
+      '</div>';
+    document.body.appendChild(overlay);
+
+    document.getElementById('fix-overlay-done-btn').addEventListener('click', function () {
+      overlay.parentNode.removeChild(overlay);
+      onComplete();
+    });
+  }
+
+  function showAllResolvedState() {
+    var list = document.getElementById('comment-list');
+    if (list) {
+      list.innerHTML = '<div class="empty-state resolved-state">'  
+        + '<svg class="empty-icon" width="48" height="48" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor" aria-hidden="true">'
+        + '<path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zM0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm11.354-2.646a.5.5 0 0 0-.708-.708L7 8.293 5.354 6.646a.5.5 0 1 0-.708.708l2 2a.5.5 0 0 0 .708 0l4-4z"/>'
+        + '</svg>'
+        + '<p>All issues resolved.</p>'  
+        + '<p class="empty-sub">Changes were pushed and all selected conversations were marked as resolved.</p>'
+        + '</div>';
+    }
+    // Hide toolbar controls — nothing left to act on
+    var toolbar = document.querySelector('.toolbar');
+    if (toolbar) { toolbar.classList.add('hidden'); }
   }
 
   function showGitNotice(message, cls) {

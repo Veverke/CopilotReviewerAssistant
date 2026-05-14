@@ -28,9 +28,9 @@ vi.mock('../../githubApi', () => ({
   postReplyComment: vi.fn(),
   resolveReviewThread: vi.fn(),
 }));
-vi.mock('../../workPlanGenerator', () => ({ generateAllWorkPlans: vi.fn() }));
+vi.mock('../../workPlanGenerator', () => ({}));
 vi.mock('../../reviewPanel', () => ({ ReviewPanel: { createOrShow: vi.fn() } }));
-vi.mock('../../fixApplier', () => ({ applyFix: vi.fn(), resolveWorkspaceFile: vi.fn() }));
+vi.mock('../../fixApplier', () => ({}));
 vi.mock('../../gitHelper', () => ({ stageFiles: vi.fn(), commitChanges: vi.fn(), pushChanges: vi.fn(), getRemoteOwnerRepo: vi.fn(), getAllRemoteOwnerRepos: vi.fn() }));
 
 import { buildReplyBody } from '../../extension';

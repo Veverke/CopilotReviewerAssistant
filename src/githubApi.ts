@@ -1,3 +1,5 @@
+export type SeverityScore = 'critical' | 'high' | 'medium' | 'low';
+
 export interface ReviewComment {
   id: number;
   path: string;
@@ -6,6 +8,7 @@ export interface ReviewComment {
   diffHunk: string;
   htmlUrl: string;
   reviewer: string;
+  severity?: SeverityScore;
 }
 
 export interface PrMetadata {
@@ -21,6 +24,7 @@ interface GitHubPrComment {
   line: number | null;
   original_line: number | null;
   position: number | null;
+  in_reply_to_id?: number | null;
   subject_type?: string;
   body: string;
   diff_hunk: string;
@@ -152,6 +156,43 @@ async function fetchPage(
   return response.json() as Promise<GitHubPrComment[]>;
 }
 
+/**
+ * Extracts a severity level from the body of a Copilot review comment.
+ * Tries multiple formats in order of specificity:
+ *   GitHub alert blocks  — > [!CAUTION], > [!WARNING], > [!NOTE/TIP]
+ *   Bold/bracket prefix  — **[High]**, **High**, **[CRITICAL]**
+ *   Labelled field       — Severity: high, **Severity**: medium
+ *   Plain word at start  — high: …, critical –
+ */
+function parseSeverityFromBody(body: string): SeverityScore | undefined {
+  if (!body) { return undefined; }
+
+  // Check the first four non-empty lines — some formats spread metadata across lines.
+  const lines = body.split('\n').map((l) => l.trim()).filter((l) => l.length > 0).slice(0, 4);
+
+  for (const line of lines) {
+    // GitHub alert blockquote: > [!CAUTION] / [!IMPORTANT] / [!WARNING] / [!NOTE] / [!TIP]
+    if (/^>?\s*\[!CAUTION\]/i.test(line))    { return 'critical'; }
+    if (/^>?\s*\[!IMPORTANT\]/i.test(line))  { return 'high'; }
+    if (/^>?\s*\[!WARNING\]/i.test(line))    { return 'medium'; }
+    if (/^>?\s*\[!\s*(?:NOTE|TIP)\]/i.test(line)) { return 'low'; }
+
+    // **[High]**, **[HIGH]**, **High**, **critical** — with optional blockquote >
+    const boldMatch = line.match(/^(?:>\s*)?\*{1,2}\[?(critical|high|medium|low)\]?\*{0,2}\b/i);
+    if (boldMatch) { return boldMatch[1].toLowerCase() as SeverityScore; }
+
+    // Severity: High  /  **Severity**: high  /  Severity – medium
+    const labelMatch = line.match(/\bseverity\b\s*\*{0,2}\s*[:\-–]\s*\*{0,2}\s*(critical|high|medium|low)\b/i);
+    if (labelMatch) { return labelMatch[1].toLowerCase() as SeverityScore; }
+
+    // Plain word followed by colon/dash at start: "high: description" or "Critical –"
+    const plainMatch = line.match(/^(?:>\s*)?(critical|high|medium|low)\s*[:\-–]/i);
+    if (plainMatch) { return plainMatch[1].toLowerCase() as SeverityScore; }
+  }
+
+  return undefined;
+}
+
 export async function fetchCopilotComments(
   token: string,
   owner: string,
@@ -160,6 +201,8 @@ export async function fetchCopilotComments(
   outputChannel?: { appendLine(value: string): void },
   additionalBotLogins?: readonly string[]
 ): Promise<{ comments: ReviewComment[]; outdatedCount: number }> {
+  const resolvedIds = await fetchResolvedCommentIds(token, owner, repo, pullNumber, outputChannel);
+
   const all: ReviewComment[] = [];
   let page = 1;
   let totalSeen = 0;
@@ -175,15 +218,25 @@ export async function fetchCopilotComments(
         outputChannel?.appendLine(`[githubApi] skipped outdated comment id=${c.id}`);
         continue;
       }
+      if (c.in_reply_to_id != null) {
+        outputChannel?.appendLine(`[githubApi] skipped reply comment id=${c.id} (reply to ${c.in_reply_to_id})`);
+        continue;
+      }
+      if (resolvedIds.has(c.id)) {
+        outputChannel?.appendLine(`[githubApi] skipped resolved comment id=${c.id}`);
+        continue;
+      }
       outputChannel?.appendLine(`[githubApi] id=${c.id} reviewer=${c.user?.login ?? '(unknown)'} path="${c.path}"`);
+      const body = c.body ?? '';
       all.push({
         id: c.id,
         path: c.path ?? '',
         line: c.line ?? c.original_line ?? 0,
-        body: c.body ?? '',
+        body,
         diffHunk: c.diff_hunk ?? '',
         htmlUrl: c.html_url,
         reviewer: c.user?.login ?? '',
+        severity: parseSeverityFromBody(body),
       });
     }
 
@@ -443,6 +496,7 @@ export async function postReplyComment(
 
 interface ReviewThreadNode {
   id: string;
+  isResolved: boolean;
   comments: { nodes: Array<{ databaseId: number }> };
 }
 
@@ -455,6 +509,68 @@ interface GraphQLThreadsResponse {
     };
   };
   errors?: Array<{ message: string }>;
+}
+
+async function fetchResolvedCommentIds(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  outputChannel?: { appendLine(value: string): void }
+): Promise<Set<number>> {
+  const query = `
+    query GetReviewThreads($owner: String!, $repo: String!, $pullNumber: Int!) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $pullNumber) {
+          reviewThreads(first: 100) {
+            nodes {
+              isResolved
+              comments(first: 1) {
+                nodes { databaseId }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  let response: Response;
+  try {
+    response = await fetch('https://api.github.com/graphql', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({ query, variables: { owner, repo, pullNumber } }),
+    });
+  } catch {
+    // If we can't fetch resolved threads, fail open (return empty set) so
+    // the user still sees comments rather than crashing the entire review.
+    outputChannel?.appendLine('[githubApi] fetchResolvedCommentIds: network error, skipping resolved filter');
+    return new Set();
+  }
+
+  if (!response.ok) {
+    outputChannel?.appendLine(`[githubApi] fetchResolvedCommentIds: HTTP ${response.status}, skipping resolved filter`);
+    return new Set();
+  }
+
+  const data = await response.json() as GraphQLThreadsResponse;
+  const threads = data.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+  const resolved = new Set<number>();
+  for (const t of threads) {
+    if (t.isResolved) {
+      const id = t.comments.nodes[0]?.databaseId;
+      if (id !== undefined) {
+        resolved.add(id);
+      }
+    }
+  }
+  outputChannel?.appendLine(`[githubApi] fetchResolvedCommentIds: ${resolved.size} resolved thread(s) found`);
+  return resolved;
 }
 
 export async function resolveReviewThread(

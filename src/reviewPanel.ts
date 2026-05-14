@@ -188,7 +188,7 @@ export class ReviewPanel {
         <p>No pending Copilot review recommendations found for this PR.</p>
         <p class="empty-sub">Try a PR that has been reviewed by GitHub Copilot.</p>
       </div>`
-      : comments.map(({ comment, workPlan, fileFound, complexity, warnings }, index) => {
+      : comments.map(({ comment, workPlan, fileFound, complexity, severity, warnings }, index) => {
         const fileNotFound = fileFound === false;
         const hasWarnings = warnings && warnings.length > 0;
         const warningTitle = hasWarnings ? warnings!.join('\n') : '';
@@ -198,9 +198,14 @@ export class ReviewPanel {
           : '';
         const complexityLevel = complexity ?? 'low';
         const complexityLabel = complexityLevel === 'low' ? 'LOW' : complexityLevel === 'medium' ? 'MED' : 'HIGH';
+        const severityLevel = severity ?? '';
+        const severityLabel = severityLevel === 'critical' ? 'CRIT' : severityLevel === 'high' ? 'HIGH' : severityLevel === 'medium' ? 'MED' : severityLevel === 'low' ? 'LOW' : '';
+        const severityChip = severityLabel
+          ? `<span class="severity-badge severity-${severityLevel}" title="Severity: ${severityLevel}">${severityLabel}</span>`
+          : '';
         const number = index + 1;
         return `
-        <div class="card" data-id="${comment.id}" data-reviewer="${escapeHtml(comment.reviewer)}" data-file="${escapeHtml(comment.path)}" data-complexity="${complexityLevel}" data-number="${number}">
+        <div class="card" data-id="${comment.id}" data-reviewer="${escapeHtml(comment.reviewer)}" data-file="${escapeHtml(comment.path)}" data-complexity="${complexityLevel}" data-severity="${severityLevel}" data-number="${number}">
           <input
             type="checkbox"
             class="comment-checkbox"
@@ -214,6 +219,7 @@ export class ReviewPanel {
               <span class="badge" title="${escapeHtml(comment.path)}">${escapeHtml(comment.path)}</span>
               <span class="line-num">line ${comment.line}</span>
               <span class="complexity-badge complexity-${complexityLevel}" title="Complexity: ${complexityLevel}">${complexityLabel}</span>
+              ${severityChip}
               ${fileNotFound ? '<span class="badge badge-warning" title="This file does not exist in the current workspace.">File not found locally</span>' : ''}
               ${hasWarnings ? `<span class="badge badge-warning" title="${escapeHtml(warningTitle)}">⚠ Scope check</span>` : ''}
               ${linkHtml}
@@ -273,14 +279,15 @@ export class ReviewPanel {
         <input type="checkbox" id="select-all-cb" />
         <span id="select-all-text">Select all</span>
       </label>
-      <button id="fix-chat-btn">Fix with Copilot Chat</button>
-      <button id="stage-commit-push-btn" class="secondary">Push &amp; Mark Resolved</button>
+      <button id="fix-chat-btn">Apply Fixes</button>
+      <button id="stage-commit-push-btn" class="secondary" disabled>Push &amp; Mark Resolved</button>
       <div class="group-sort-row">
         <span class="controls-label">Group by:</span>
         <div class="btn-group">
           <button class="group-btn secondary active" data-group="none">None</button>
           <button class="group-btn secondary" data-group="file">File</button>
           <button class="group-btn secondary" data-group="complexity">Complexity</button>
+          <button class="group-btn secondary" data-group="severity">Severity</button>
         </div>
         <button id="expand-collapse-btn" class="secondary hidden">Collapse All</button>
       </div>
