@@ -54,7 +54,7 @@ describe('getGitHubToken', () => {
 
   it('returns the access token when a session is found', async () => {
     vi.mocked(vscode.authentication.getSession).mockResolvedValue({
-      accessToken: 'ghp_test_token_123',
+      accessToken: 'mock-access-token',
       id: 's1',
       scopes: ['repo'],
       account: { id: 'user', label: 'User' },
@@ -62,7 +62,7 @@ describe('getGitHubToken', () => {
 
     const token = await getGitHubToken(noPatSecrets);
 
-    expect(token).toBe('ghp_test_token_123');
+    expect(token).toBe('mock-access-token');
   });
 
   it('throws when session is null (user cancelled sign-in)', async () => {
@@ -87,11 +87,11 @@ describe('getGitHubToken', () => {
   });
 
   it('returns the stored PAT from SecretStorage without calling getSession', async () => {
-    const patSecrets = { get: vi.fn().mockResolvedValue('ghp_stored_pat'), store: vi.fn(), delete: vi.fn() } as any;
+    const patSecrets = { get: vi.fn().mockResolvedValue('stored-pat-mock'), store: vi.fn(), delete: vi.fn() } as any;
 
     const token = await getGitHubToken(patSecrets);
 
-    expect(token).toBe('ghp_stored_pat');
+    expect(token).toBe('stored-pat-mock');
     expect(vscode.authentication.getSession).not.toHaveBeenCalled();
   });
 
@@ -394,7 +394,7 @@ describe('refreshSession', () => {
 
 describe('hasPat', () => {
   it('returns true when a non-empty PAT is stored', async () => {
-    const secrets = { get: vi.fn().mockResolvedValue('ghp_my_pat'), store: vi.fn(), delete: vi.fn() } as any;
+    const secrets = { get: vi.fn().mockResolvedValue('my-pat-mock'), store: vi.fn(), delete: vi.fn() } as any;
     expect(await hasPat(secrets)).toBe(true);
   });
 
@@ -413,17 +413,17 @@ describe('storePat', () => {
   it('stores the PAT in SecretStorage under the correct key', async () => {
     const secrets = { get: vi.fn(), store: vi.fn().mockResolvedValue(undefined), delete: vi.fn() } as any;
 
-    await storePat(secrets, 'ghp_my_new_pat');
+    await storePat(secrets, 'my-new-pat-mock');
 
-    expect(secrets.store).toHaveBeenCalledWith('copilotReviewer.githubPat', 'ghp_my_new_pat');
+    expect(secrets.store).toHaveBeenCalledWith('copilotReviewer.githubPat', 'my-new-pat-mock');
   });
 
   it('stores the exact PAT string provided without modification', async () => {
     const secrets = { get: vi.fn(), store: vi.fn().mockResolvedValue(undefined), delete: vi.fn() } as any;
 
-    await storePat(secrets, 'github_pat_ABC123');
+    await storePat(secrets, 'another-pat-mock');
 
-    expect(secrets.store).toHaveBeenCalledWith('copilotReviewer.githubPat', 'github_pat_ABC123');
+    expect(secrets.store).toHaveBeenCalledWith('copilotReviewer.githubPat', 'another-pat-mock');
     expect(secrets.store).toHaveBeenCalledOnce();
   });
 });
@@ -451,7 +451,7 @@ describe('setAuthOutputChannel', () => {
     setAuthOutputChannel(ch);
 
     const secrets = {
-      get: vi.fn().mockResolvedValue('ghp_test'),
+      get: vi.fn().mockResolvedValue('pat-mock-for-logging'),
       store: vi.fn(),
       delete: vi.fn(),
     } as any;

@@ -1,0 +1,12 @@
+# GitGuardian configuration
+# https://docs.gitguardian.com/ggshield-docs/reference/configuration
+
+# Exclude test fixture files that intentionally contain fake tokens.
+# These strings follow GitHub token formats but are clearly synthetic
+# (no real entropy, used only as mock values in unit tests).
+ignore-paths:
+  - src/test/
+  - "**/*.test.ts"
+  - "**/*.test.js"
+  - "**/*.spec.ts"
+  - "**/*.spec.js"
