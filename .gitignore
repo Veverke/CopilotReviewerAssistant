@@ -2,6 +2,7 @@ node_modules/
 out/
 *.vsix
 .vscode-test/
+coverage/
 
 # Compiled mock files (generated from .ts sources)
 __mocks__/*.js
