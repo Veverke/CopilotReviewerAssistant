@@ -12,9 +12,12 @@ on:
 
 jobs:
 
-  # ── Unit tests with coverage enforcement ─────────────────────────────────────
-  unit-tests:
-    name: Unit tests & coverage (≥90%)
+  # ── Unit tests (with coverage) then integration tests in one job ──────────────
+  # Single job avoids duplicating checkout/setup-node/npm-ci. Unit tests run
+  # first (no compile needed — Vitest handles TS directly); integration tests
+  # follow after TypeScript is compiled.
+  ci:
+    name: Unit tests & coverage (≥90%) + Integration tests
     runs-on: ubuntu-latest
 
     steps:
@@ -28,6 +31,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # ── Unit tests ─────────────────────────────────────────────────────────────
       # Vitest runs the unit suite and enforces the thresholds declared in
       # vitest.config.ts. The step fails (non-zero exit) if any threshold is missed.
       - name: Run unit tests with coverage
@@ -41,22 +45,7 @@ jobs:
           path: coverage/
           retention-days: 14
 
-  # ── Integration tests inside a real VS Code host ──────────────────────────────
-  integration-tests:
-    name: Integration tests (VS Code host)
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
+      # ── Integration tests ──────────────────────────────────────────────────────
       # TypeScript must be compiled before @vscode/test-electron can find the JS output.
       - name: Compile TypeScript
         run: npm run compile

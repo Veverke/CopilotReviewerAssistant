@@ -46,7 +46,7 @@ suite('Activation & command registration', () => {
     const ext = vscode.extensions.getExtension(EXT_ID);
     assert.ok(ext, `Extension "${EXT_ID}" not found`);
     // activate() is idempotent in VS Code — safe to call even if already active
-    await assert.doesNotReject(() => ext!.activate());
+    await assert.doesNotReject(() => Promise.resolve(ext!.activate()));
   });
 
   test('extension exports an object after activation (not undefined)', async () => {
@@ -200,7 +200,7 @@ suite('clearPat command — end-to-end', () => {
 
   test('executes without throwing when no PAT has ever been stored', async () => {
     await assert.doesNotReject(
-      () => vscode.commands.executeCommand(CLEAR_PAT_CMD),
+      () => Promise.resolve(vscode.commands.executeCommand(CLEAR_PAT_CMD)),
       'clearPat must not throw when no credential is stored in SecretStorage',
     );
   });
