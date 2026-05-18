@@ -99,17 +99,6 @@ That is a solid starting point. But several things remain unresolved once the re
 
 ## Release Notes
 
-### 1.5.0
-
-- Smart PR picker: automatically finds open PRs with pending Copilot reviews across all workspace remotes.
-- PR filter setting (`assigned` / `created` / `both`).
-- Reviewer filter row when multiple reviewers are present.
-- Group by file or complexity.
-- Push progress bar with per-step labels.
-- Auto-resolve review threads after push.
-- Commit message prefix prompt.
-- Build/test confirmation gate before push.
-
 ### 1.0.0
 
 Initial public release.
