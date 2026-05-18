@@ -28,7 +28,7 @@ vi.mock('vscode', () => ({
 }));
 
 import * as vscode from 'vscode';
-import { getGitHubToken, signInWithBrowser, refreshSession, hasPat } from '../../auth';
+import { getGitHubToken, signInWithBrowser, refreshSession, hasPat, storePat, clearPat, setAuthOutputChannel } from '../../auth';
 
 const noPatSecrets = { get: vi.fn().mockResolvedValue(undefined), store: vi.fn(), delete: vi.fn() } as any;
 
@@ -406,6 +406,62 @@ describe('hasPat', () => {
   it('returns false when the stored PAT is an empty/whitespace string', async () => {
     const secrets = { get: vi.fn().mockResolvedValue('   '), store: vi.fn(), delete: vi.fn() } as any;
     expect(await hasPat(secrets)).toBe(false);
+  });
+});
+
+describe('storePat', () => {
+  it('stores the PAT in SecretStorage under the correct key', async () => {
+    const secrets = { get: vi.fn(), store: vi.fn().mockResolvedValue(undefined), delete: vi.fn() } as any;
+
+    await storePat(secrets, 'ghp_my_new_pat');
+
+    expect(secrets.store).toHaveBeenCalledWith('copilotReviewer.githubPat', 'ghp_my_new_pat');
+  });
+
+  it('stores the exact PAT string provided without modification', async () => {
+    const secrets = { get: vi.fn(), store: vi.fn().mockResolvedValue(undefined), delete: vi.fn() } as any;
+
+    await storePat(secrets, 'github_pat_ABC123');
+
+    expect(secrets.store).toHaveBeenCalledWith('copilotReviewer.githubPat', 'github_pat_ABC123');
+    expect(secrets.store).toHaveBeenCalledOnce();
+  });
+});
+
+describe('clearPat', () => {
+  it('deletes both the PAT and the stored account ID', async () => {
+    const secrets = { get: vi.fn(), store: vi.fn(), delete: vi.fn().mockResolvedValue(undefined) } as any;
+
+    await clearPat(secrets);
+
+    expect(secrets.delete).toHaveBeenCalledWith('copilotReviewer.githubPat');
+    expect(secrets.delete).toHaveBeenCalledWith('copilotReviewer.githubAccountId');
+    expect(secrets.delete).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('setAuthOutputChannel', () => {
+  it('does not throw when called with a valid output channel', () => {
+    const ch = { appendLine: vi.fn() } as any;
+    expect(() => setAuthOutputChannel(ch)).not.toThrow();
+  });
+
+  it('routes internal log messages through the supplied output channel', async () => {
+    const ch = { appendLine: vi.fn() } as any;
+    setAuthOutputChannel(ch);
+
+    const secrets = {
+      get: vi.fn().mockResolvedValue('ghp_test'),
+      store: vi.fn(),
+      delete: vi.fn(),
+    } as any;
+
+    await getGitHubToken(secrets);
+
+    expect(ch.appendLine).toHaveBeenCalledWith(expect.stringContaining('[auth]'));
+
+    // Reset channel so it does not bleed into other tests
+    setAuthOutputChannel(undefined as any);
   });
 });
 

@@ -51,11 +51,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run unit tests
-        run: npm run test:unit
+      - name: Run unit tests with coverage
+        run: npm run test:unit:coverage
 
       - name: Compile TypeScript
         run: npm run compile
+
+      - name: Run integration tests
+        run: xvfb-run -a npm run test:integration
+        env:
+          CI: "true"
 
       - name: Package VSIX
         run: npx @vscode/vsce package --no-dependencies

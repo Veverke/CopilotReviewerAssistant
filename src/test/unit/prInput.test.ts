@@ -226,4 +226,16 @@ describe('promptForPrUrl clipboard gating', () => {
     const callOpts: any = vi.mocked(vscode.window.showInputBox).mock.calls[0][0];
     expect(callOpts.value).toBeUndefined();
   });
+
+  it('treats undefined from config.get as false (preFillFromClipboard not set)', async () => {
+    vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+      get: vi.fn().mockReturnValue(undefined),
+    } as any);
+    vi.mocked(vscode.window.showInputBox).mockResolvedValue(undefined);
+
+    await promptForPrUrl();
+
+    // config returned undefined → preFill defaults to false → clipboard never read
+    expect(vscode.env.clipboard.readText).not.toHaveBeenCalled();
+  });
 });

@@ -82,6 +82,28 @@ function makeResponse(
   } as unknown as Response;
 }
 
+// ─── fetchCopilotComments helpers ──────────────────────────────────────────────
+
+/**
+ * Empty resolved-threads GraphQL response — satisfies the fetchResolvedCommentIds
+ * call that fetchCopilotComments makes before fetching inline comments.
+ */
+function makeGraphQLNoResolvedThreads(): Response {
+  return makeResponse({
+    data: {
+      repository: { pullRequest: { reviewThreads: { nodes: [] } } },
+    },
+  });
+}
+
+/**
+ * Minimal GitHub /users/:login response where name is null so the reviewer
+ * field stays as the login string (name?.trim() || login → login).
+ */
+function makeDisplayNameResponse(login: string): Response {
+  return makeResponse({ login, name: null });
+}
+
 // ─── fetchCopilotComments ─────────────────────────────────────────────────────
 
 describe('fetchCopilotComments', () => {
@@ -91,7 +113,10 @@ describe('fetchCopilotComments', () => {
   it('returns all comments from all reviewers with reviewer field set', async () => {
     const copilot = makeRawComment();
     const human = makeRawComment({ id: 2, user: { login: 'human-dev' } });
-    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([copilot, human]));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+      .mockResolvedValueOnce(makeResponse([copilot, human])) // fetchPage page 1
+      .mockResolvedValueOnce(makeDisplayNameResponse('human-dev')); // fetchUserDisplayNames
 
     const { comments, outdatedCount } = await fetchCopilotComments('tok', 'o', 'r', 1);
 
@@ -111,9 +136,10 @@ describe('fetchCopilotComments', () => {
     ];
 
     for (const login of aliases) {
-      vi.mocked(fetch).mockResolvedValueOnce(
-        makeResponse([makeRawComment({ user: { login } })])
-      );
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+        .mockResolvedValueOnce(makeResponse([makeRawComment({ user: { login } })])); // fetchPage
+      // Known copilot aliases are COPILOT_BOT_LOGINS members — no fetchUserDisplayNames call.
       const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
       expect(comments).toHaveLength(1);
       expect(comments[0].reviewer).toBe(login);
@@ -122,7 +148,9 @@ describe('fetchCopilotComments', () => {
 
   it('includes comments from logins that merely resemble copilot but are not in the explicit allowlist', async () => {
     const comment = makeRawComment({ user: { login: 'myCopilot-internal[bot]' } });
-    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+      .mockResolvedValueOnce(makeResponse([comment])); // fetchPage — login ends with [bot], no display-name fetch
 
     const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
     expect(comments).toHaveLength(1);
@@ -131,7 +159,9 @@ describe('fetchCopilotComments', () => {
 
   it('skips and counts outdated comments (position=null, subject_type=line)', async () => {
     const outdated = makeRawComment({ position: null });
-    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([outdated]));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+      .mockResolvedValueOnce(makeResponse([outdated])); // fetchPage — outdated filtered out, no display-name fetch
 
     const { comments, outdatedCount } = await fetchCopilotComments('tok', 'o', 'r', 1);
     expect(comments).toHaveLength(0);
@@ -143,18 +173,22 @@ describe('fetchCopilotComments', () => {
       makeRawComment({ id: i + 1 })
     );
     const page2 = [makeRawComment({ id: 101 })];
+    // All items use the default copilot-pull-request-reviewer[bot] login — no display-name fetch.
     vi.mocked(fetch)
-      .mockResolvedValueOnce(makeResponse(page1))
-      .mockResolvedValueOnce(makeResponse(page2));
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+      .mockResolvedValueOnce(makeResponse(page1))           // fetchPage page 1
+      .mockResolvedValueOnce(makeResponse(page2));           // fetchPage page 2
 
     const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
     expect(comments).toHaveLength(101);
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(3); // GraphQL + 2 page fetches
   });
 
   it('uses original_line as fallback when line is null', async () => {
     const c = makeRawComment({ line: null, original_line: 7 });
-    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([c]));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+      .mockResolvedValueOnce(makeResponse([c])); // fetchPage — copilot bot, no display-name fetch
 
     const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
     expect(comments[0].line).toBe(7);
@@ -162,81 +196,98 @@ describe('fetchCopilotComments', () => {
 
   it('falls back to 0 when both line and original_line are null', async () => {
     const c = makeRawComment({ line: null, original_line: null });
-    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([c]));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+      .mockResolvedValueOnce(makeResponse([c])); // fetchPage — copilot bot, no display-name fetch
 
     const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
     expect(comments[0].line).toBe(0);
   });
 
   it('throws a 401 auth-failed error', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(makeResponse({}, 401));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+      .mockResolvedValueOnce(makeResponse({}, 401));          // fetchPage → 401
     await expect(fetchCopilotComments('tok', 'o', 'r', 1)).rejects.toThrow(
       'GitHub authentication failed'
     );
   });
 
   it('throws a rate-limit error on 403 with remaining=0', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      makeResponse({}, 403, {
-        'X-RateLimit-Remaining': '0',
-        'X-RateLimit-Reset': '9999999999',
-      })
-    );
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+      .mockResolvedValueOnce(
+        makeResponse({}, 403, {
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset': '9999999999',
+        })
+      );
     await expect(fetchCopilotComments('tok', 'o', 'r', 1)).rejects.toThrow(
       'rate limit'
     );
   });
 
   it('throws an access-denied error on 403 when rate limit is not exhausted', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      makeResponse({}, 403, { 'X-RateLimit-Remaining': '10' })
-    );
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+      .mockResolvedValueOnce(
+        makeResponse({}, 403, { 'X-RateLimit-Remaining': '10' })
+      );
     await expect(fetchCopilotComments('tok', 'o', 'r', 1)).rejects.toThrow(
       'Access denied'
     );
   });
 
   it('throws a "PR not found" error on 404', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(makeResponse({}, 404));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+      .mockResolvedValueOnce(makeResponse({}, 404));          // fetchPage → 404
     await expect(fetchCopilotComments('tok', 'o', 'r', 1)).rejects.toThrow(
       'PR not found'
     );
   });
 
   it('throws a rate-limit error on 429', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      makeResponse({}, 429, { 'X-RateLimit-Reset': '9999999999' })
-    );
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+      .mockResolvedValueOnce(
+        makeResponse({}, 429, { 'X-RateLimit-Reset': '9999999999' })
+      );
     await expect(fetchCopilotComments('tok', 'o', 'r', 1)).rejects.toThrow(
       'rate limit'
     );
   });
 
   it('retries once on network error and succeeds on the second call', async () => {
+    // fetchWithRetry retries the SAME comments-page request on network failure.
+    // Sequence: GraphQL (success) → fetchPage attempt 1 (network error) → fetchPage retry (success).
     vi.useFakeTimers();
     try {
       const c = makeRawComment();
       vi.mocked(fetch)
-        .mockRejectedValueOnce(new Error('Network down'))
-        .mockResolvedValueOnce(makeResponse([c]));
+        .mockResolvedValueOnce(makeGraphQLNoResolvedThreads())  // fetchResolvedCommentIds
+        .mockRejectedValueOnce(new Error('Network down'))        // fetchPage attempt 1
+        .mockResolvedValueOnce(makeResponse([c]));               // fetchPage retry (after 1s)
 
       const resultPromise = fetchCopilotComments('tok', 'o', 'r', 1);
-      await vi.advanceTimersByTimeAsync(1100);
+      await vi.advanceTimersByTimeAsync(1100); // advance past the 1s retry delay
       const result = await resultPromise;
 
       expect(result.comments).toHaveLength(1);
-      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch).toHaveBeenCalledTimes(3); // GraphQL + 2 fetchPage calls (attempt + retry)
     } finally {
       vi.useRealTimers();
     }
   });
 
   it('throws a network error after both fetch attempts fail', async () => {
+    // Sequence: GraphQL (success) → fetchPage attempt 1 (fail) → fetchPage retry (fail) → throws.
     vi.useFakeTimers();
     try {
       vi.mocked(fetch)
-        .mockRejectedValueOnce(new Error('down'))
-        .mockRejectedValueOnce(new Error('still down'));
+        .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+        .mockRejectedValueOnce(new Error('down'))              // fetchPage attempt 1
+        .mockRejectedValueOnce(new Error('still down'));       // fetchPage retry
       const resultPromise = fetchCopilotComments('tok', 'o', 'r', 1);
       // Attach the rejection handler BEFORE advancing timers to avoid
       // an "unhandled rejection" Node.js warning.
@@ -246,6 +297,84 @@ describe('fetchCopilotComments', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('filters out comments whose review thread is already resolved (resolved IDs from GraphQL)', async () => {
+    // Comment 100 is resolved, comment 200 is active. After filtering, only 200 should remain.
+    const resolvedComment = makeRawComment({ id: 100 });
+    const activeComment  = makeRawComment({ id: 200 });
+
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeResponse({   // GraphQL: thread for comment 100 is resolved
+        data: {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                nodes: [{
+                  isResolved: true,
+                  comments: { nodes: [{ databaseId: 100 }] },
+                }],
+              },
+            },
+          },
+        },
+      }))
+      .mockResolvedValueOnce(makeResponse([resolvedComment, activeComment])); // page 1
+
+    const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
+
+    expect(comments).toHaveLength(1);
+    expect(comments[0].id).toBe(200);
+  });
+
+  it('shows all comments (fail-open) when fetchResolvedCommentIds gets a non-ok HTTP response', async () => {
+    const comment = makeRawComment();
+
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeResponse({ message: 'Bad credentials' }, 401)) // GraphQL → non-ok
+      .mockResolvedValueOnce(makeResponse([comment]));                           // page 1 proceeds normally
+
+    const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
+
+    expect(comments).toHaveLength(1);
+  });
+
+  it('shows all comments (fail-open) when fetchResolvedCommentIds throws a network error', async () => {
+    const comment = makeRawComment();
+
+    vi.mocked(fetch)
+      .mockRejectedValueOnce(new Error('Network error'))  // GraphQL → network error
+      .mockResolvedValueOnce(makeResponse([comment]));    // page 1 proceeds normally
+
+    const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
+
+    expect(comments).toHaveLength(1);
+  });
+
+  it('throws a generic GitHub API error when fetchPage returns an unexpected non-ok status', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+      .mockResolvedValueOnce(makeResponse({}, 500));         // fetchPage → 500 → !response.ok
+    await expect(fetchCopilotComments('tok', 'o', 'r', 1)).rejects.toThrow(
+      'GitHub API error: 500'
+    );
+  });
+
+  it('skips reply comments (in_reply_to_id != null) and logs to outputChannel when provided', async () => {
+    const topLevel = makeRawComment({ id: 1 });
+    const reply = makeRawComment({ id: 2, in_reply_to_id: 1 });
+    const channel = { appendLine: vi.fn() };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads())    // fetchResolvedCommentIds
+      .mockResolvedValueOnce(makeResponse([topLevel, reply]));  // fetchPage — 2 items < 100, break
+
+    const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1, channel);
+
+    expect(comments).toHaveLength(1);
+    expect(comments[0].id).toBe(1);
+    expect(channel.appendLine).toHaveBeenCalledWith(
+      expect.stringContaining('skipped reply comment id=2')
+    );
   });
 });
 
@@ -580,6 +709,21 @@ describe('fetchOpenPullRequests', () => {
     const prs = await fetchOpenPullRequests('tok', 'o', 'r', 'alice', 'assigned');
     expect(prs).toHaveLength(0);
   });
+
+  it('throws authentication error on a 401 response', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse({}, 401));
+    await expect(fetchOpenPullRequests('tok', 'o', 'r')).rejects.toThrow('GitHub authentication failed');
+  });
+
+  it('throws repository-not-found error on a 404 response', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse({}, 404));
+    await expect(fetchOpenPullRequests('tok', 'o', 'r')).rejects.toThrow('Repository not found');
+  });
+
+  it('throws a generic API error for non-ok responses other than 401/403/404', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeResponse({}, 500));
+    await expect(fetchOpenPullRequests('tok', 'o', 'r')).rejects.toThrow('GitHub API error: 500');
+  });
 });
 
 // ─── fetchHasCopilotReview ────────────────────────────────────────────────
@@ -714,39 +858,56 @@ describe('isCopilotBot trust-bypass prevention', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('includes a login that merely contains "copilot" (mycopilot) since all comments are returned', async () => {
+    // 'mycopilot' is not in COPILOT_BOT_LOGINS and has no [bot] suffix → fetchUserDisplayNames is called.
     const comment = makeRawComment({ user: { login: 'mycopilot' } });
-    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads())        // fetchResolvedCommentIds
+      .mockResolvedValueOnce(makeResponse([comment]))               // fetchPage
+      .mockResolvedValueOnce(makeDisplayNameResponse('mycopilot')); // fetchUserDisplayNames
     const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
     expect(comments).toHaveLength(1);
     expect(comments[0].reviewer).toBe('mycopilot');
   });
 
   it('includes "notcopilot" login since all comments are returned', async () => {
+    // 'notcopilot' is not in COPILOT_BOT_LOGINS and has no [bot] suffix → display-name fetch.
     const comment = makeRawComment({ user: { login: 'notcopilot' } });
-    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads())         // fetchResolvedCommentIds
+      .mockResolvedValueOnce(makeResponse([comment]))                // fetchPage
+      .mockResolvedValueOnce(makeDisplayNameResponse('notcopilot')); // fetchUserDisplayNames
     const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
     expect(comments).toHaveLength(1);
     expect(comments[0].reviewer).toBe('notcopilot');
   });
 
   it('includes "Copilot-evil[bot]" login since all comments are returned', async () => {
+    // Login ends with [bot] — excluded from fetchUserDisplayNames.
     const comment = makeRawComment({ user: { login: 'Copilot-evil[bot]' } });
-    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+      .mockResolvedValueOnce(makeResponse([comment]));       // fetchPage — no display-name fetch
     const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1);
     expect(comments).toHaveLength(1);
     expect(comments[0].reviewer).toBe('Copilot-evil[bot]');
   });
 
   it('accepts a login that is in additionalBotLogins', async () => {
+    // 'my-custom-bot[bot]' ends with [bot] — no display-name fetch.
     const comment = makeRawComment({ user: { login: 'my-custom-bot[bot]' } });
-    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+      .mockResolvedValueOnce(makeResponse([comment]));       // fetchPage
     const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1, undefined, ['my-custom-bot[bot]']);
     expect(comments).toHaveLength(1);
   });
 
   it('returns comment when login does not match additionalBotLogins since all comments are returned', async () => {
+    // 'my-custom-bot-v2[bot]' ends with [bot] — no display-name fetch.
     const comment = makeRawComment({ user: { login: 'my-custom-bot-v2[bot]' } });
-    vi.mocked(fetch).mockResolvedValueOnce(makeResponse([comment]));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(makeGraphQLNoResolvedThreads()) // fetchResolvedCommentIds
+      .mockResolvedValueOnce(makeResponse([comment]));       // fetchPage
     const { comments } = await fetchCopilotComments('tok', 'o', 'r', 1, undefined, ['my-custom-bot[bot]']);
     expect(comments).toHaveLength(1);
     expect(comments[0].reviewer).toBe('my-custom-bot-v2[bot]');
