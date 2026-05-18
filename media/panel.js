@@ -106,9 +106,6 @@
   var COMPLEXITY_GROUP_ORDER = ['high', 'medium', 'low'];
   var COMPLEXITY_GROUP_LABELS = { high: 'High', medium: 'Medium', low: 'Low' };
 
-  var SEVERITY_GROUP_ORDER = ['critical', 'high', 'medium', 'low', ''];
-  var SEVERITY_GROUP_LABELS = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', '': 'Unknown' };
-
   function getAllCards() {
     return Array.from(document.querySelectorAll('.card[data-number]'));
   }
@@ -154,13 +151,6 @@
         groups[key].push(c);
       });
       groupOrder = COMPLEXITY_GROUP_ORDER.filter(function(k) { return groups[k] && groups[k].length > 0; });
-    } else if (currentGroup === 'severity') {
-      cards.forEach(function(c) {
-        var key = c.dataset.severity || '';
-        if (!groups[key]) { groups[key] = []; }
-        groups[key].push(c);
-      });
-      groupOrder = SEVERITY_GROUP_ORDER.filter(function(k) { return groups[k] && groups[k].length > 0; });
     }
 
     groupOrder.forEach(function(key) {
@@ -169,7 +159,6 @@
       header.className = 'group-header' + (isCollapsed ? ' collapsed' : '');
       header.dataset.groupKey = key;
       var label = currentGroup === 'complexity' ? (COMPLEXITY_GROUP_LABELS[key] || key)
-        : currentGroup === 'severity' ? (SEVERITY_GROUP_LABELS[key] || key)
         : key;
       var visibleCount = groups[key].filter(function(c) { return !c.classList.contains('reviewer-hidden'); }).length;
       if (visibleCount === 0) { return; } // hide group if all cards are reviewer-filtered out
@@ -354,14 +343,28 @@
       '<div class="fix-overlay-card">' +
         '<div class="fix-overlay-spinner" aria-hidden="true"></div>' +
         '<p class="fix-overlay-msg">Applying Fixes\u2026</p>' +
-        '<p class="fix-overlay-sub">Switch to the Copilot Chat panel and wait for all fixes to be applied, then click the button below to continue.</p>' +
-        '<button class="fix-overlay-done-btn" id="fix-overlay-done-btn">Mark as Applied</button>' +
+        '<p class="fix-overlay-sub">Copilot Chat is working on the fixes. Once it finishes, click anywhere in this panel to continue — the overlay will dismiss automatically.</p>' +
+        '<button class="fix-overlay-done-btn" id="fix-overlay-done-btn">Continue manually</button>' +
       '</div>';
     document.body.appendChild(overlay);
 
-    document.getElementById('fix-overlay-done-btn').addEventListener('click', function () {
-      overlay.parentNode.removeChild(overlay);
+    var hasLostFocus = false;
+
+    function dismiss() {
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('focus', onFocus);
+      if (overlay.parentNode) { overlay.parentNode.removeChild(overlay); }
       onComplete();
+    }
+
+    function onBlur() { hasLostFocus = true; }
+    function onFocus() { if (hasLostFocus) { dismiss(); } }
+
+    window.addEventListener('blur', onBlur);
+    window.addEventListener('focus', onFocus);
+
+    document.getElementById('fix-overlay-done-btn').addEventListener('click', function () {
+      dismiss();
     });
   }
 

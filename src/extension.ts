@@ -384,7 +384,6 @@ export function activate(context: vscode.ExtensionContext) {
 			comment: c,
 			workPlan: '',
 			complexity: classifyComplexity(c),
-			severity: c.severity,
 		}));
 		const allDoneResults: DoneFixResult[] = rawComments.map((c) => ({
 			commentId: c.id,

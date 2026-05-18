@@ -1,5 +1,3 @@
-export type SeverityScore = 'critical' | 'high' | 'medium' | 'low';
-
 export interface ReviewComment {
   id: number;
   path: string;
@@ -8,7 +6,6 @@ export interface ReviewComment {
   diffHunk: string;
   htmlUrl: string;
   reviewer: string;
-  severity?: SeverityScore;
 }
 
 export interface PrMetadata {
@@ -156,43 +153,6 @@ async function fetchPage(
   return response.json() as Promise<GitHubPrComment[]>;
 }
 
-/**
- * Extracts a severity level from the body of a Copilot review comment.
- * Tries multiple formats in order of specificity:
- *   GitHub alert blocks  — > [!CAUTION], > [!WARNING], > [!NOTE/TIP]
- *   Bold/bracket prefix  — **[High]**, **High**, **[CRITICAL]**
- *   Labelled field       — Severity: high, **Severity**: medium
- *   Plain word at start  — high: …, critical –
- */
-function parseSeverityFromBody(body: string): SeverityScore | undefined {
-  if (!body) { return undefined; }
-
-  // Check the first four non-empty lines — some formats spread metadata across lines.
-  const lines = body.split('\n').map((l) => l.trim()).filter((l) => l.length > 0).slice(0, 4);
-
-  for (const line of lines) {
-    // GitHub alert blockquote: > [!CAUTION] / [!IMPORTANT] / [!WARNING] / [!NOTE] / [!TIP]
-    if (/^>?\s*\[!CAUTION\]/i.test(line))    { return 'critical'; }
-    if (/^>?\s*\[!IMPORTANT\]/i.test(line))  { return 'high'; }
-    if (/^>?\s*\[!WARNING\]/i.test(line))    { return 'medium'; }
-    if (/^>?\s*\[!\s*(?:NOTE|TIP)\]/i.test(line)) { return 'low'; }
-
-    // **[High]**, **[HIGH]**, **High**, **critical** — with optional blockquote >
-    const boldMatch = line.match(/^(?:>\s*)?\*{1,2}\[?(critical|high|medium|low)\]?\*{0,2}\b/i);
-    if (boldMatch) { return boldMatch[1].toLowerCase() as SeverityScore; }
-
-    // Severity: High  /  **Severity**: high  /  Severity – medium
-    const labelMatch = line.match(/\bseverity\b\s*\*{0,2}\s*[:\-–]\s*\*{0,2}\s*(critical|high|medium|low)\b/i);
-    if (labelMatch) { return labelMatch[1].toLowerCase() as SeverityScore; }
-
-    // Plain word followed by colon/dash at start: "high: description" or "Critical –"
-    const plainMatch = line.match(/^(?:>\s*)?(critical|high|medium|low)\s*[:\-–]/i);
-    if (plainMatch) { return plainMatch[1].toLowerCase() as SeverityScore; }
-  }
-
-  return undefined;
-}
-
 export async function fetchCopilotComments(
   token: string,
   owner: string,
@@ -236,7 +196,6 @@ export async function fetchCopilotComments(
         diffHunk: c.diff_hunk ?? '',
         htmlUrl: c.html_url,
         reviewer: c.user?.login ?? '',
-        severity: parseSeverityFromBody(body),
       });
     }
 

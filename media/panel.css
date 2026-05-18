@@ -936,46 +936,6 @@ a:focus-visible {
   border-color: rgba(239, 68, 68, 0.3);
 }
 
-/* ─── Severity badge ─────────────────────────────────────────────────────── */
-
-.severity-badge {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 0.72em;
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  font-family: var(--vscode-editor-font-family, monospace);
-  flex-shrink: 0;
-  border: 1px solid transparent;
-}
-
-.severity-low {
-  background-color: rgba(34, 197, 94, 0.12);
-  color: #4ade80;
-  border-color: rgba(34, 197, 94, 0.3);
-}
-
-.severity-medium {
-  background-color: rgba(234, 179, 8, 0.12);
-  color: #facc15;
-  border-color: rgba(234, 179, 8, 0.3);
-}
-
-.severity-high {
-  background-color: rgba(239, 68, 68, 0.12);
-  color: #f87171;
-  border-color: rgba(239, 68, 68, 0.3);
-}
-
-.severity-critical {
-  background-color: rgba(168, 85, 247, 0.15);
-  color: #c084fc;
-  border-color: rgba(168, 85, 247, 0.35);
-}
-
 /* ─── Group / sort controls ──────────────────────────────────────────────── */
 
 .group-sort-row {
