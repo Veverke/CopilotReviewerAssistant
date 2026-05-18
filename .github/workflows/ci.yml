@@ -1,0 +1,59 @@
+name: CI
+
+# Runs on every push to main/master and on every pull request targeting those branches.
+# Blocks merges if unit-test coverage drops below the configured thresholds or if
+# the integration tests fail inside the VS Code extension host.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+
+  # ── Unit tests (with coverage) then integration tests in one job ──────────────
+  # Single job avoids duplicating checkout/setup-node/npm-ci. Unit tests run
+  # first (no compile needed — Vitest handles TS directly); integration tests
+  # follow after TypeScript is compiled.
+  ci:
+    name: Unit tests & coverage (≥90%) + Integration tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # ── Unit tests ─────────────────────────────────────────────────────────────
+      # Vitest runs the unit suite and enforces the thresholds declared in
+      # vitest.config.ts. The step fails (non-zero exit) if any threshold is missed.
+      - name: Run unit tests with coverage
+        run: npm run test:unit:coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always() # upload even on threshold failure so the report can be inspected
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+
+      # ── Integration tests ──────────────────────────────────────────────────────
+      # TypeScript must be compiled before @vscode/test-electron can find the JS output.
+      - name: Compile TypeScript
+        run: npm run compile
+
+      # @vscode/test-electron downloads a VS Code build and runs tests inside it.
+      # On Linux CI the process needs a virtual display (Xvfb) because VS Code is
+      # an Electron application even in headless mode.
+      - name: Run integration tests
+        run: xvfb-run -a npm run test:integration
+        env:
+          CI: "true"

@@ -42,8 +42,6 @@ export function parsePrUrl(url: string): PrCoordinates {
 
 export async function pickFromOpenPrs(
   prs: OpenPr[],
-  owner: string,
-  repo: string
 ): Promise<PrCoordinates | undefined> {
   if (prs.length === 0) {
     // No open PRs found — fall back to manual URL entry
@@ -54,8 +52,16 @@ export async function pickFromOpenPrs(
     return parsePrUrl(rawUrl);
   }
 
+  // Show owner/repo prefix in the label only when PRs span multiple repos
+  const distinctRepos = new Set(prs.map((pr) => `${pr.owner}/${pr.repo}`));
+  const multiRepo = distinctRepos.size > 1;
+
   const items = prs.map((pr) => ({
-    label: `#${pr.pullNumber} — ${pr.title}`,
+    label: multiRepo
+      ? `${pr.owner}/${pr.repo} #${pr.pullNumber} — ${pr.title}`
+      : `#${pr.pullNumber} — ${pr.title}`,
+    owner: pr.owner,
+    repo: pr.repo,
     pullNumber: pr.pullNumber,
   }));
 
@@ -69,5 +75,5 @@ export async function pickFromOpenPrs(
     return undefined;
   }
 
-  return { owner, repo, pullNumber: picked.pullNumber };
+  return { owner: picked.owner, repo: picked.repo, pullNumber: picked.pullNumber };
 }

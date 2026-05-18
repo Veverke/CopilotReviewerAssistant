@@ -2,7 +2,7 @@
   "name": "copilot-reviewer-assistant",
   "displayName": "Copilot Reviewer Assistant",
   "description": "GitHub Copilot review suggestions don't always come with an 'Apply' button. This extension fills that gap — fetch every pending Copilot review comment and apply all fixes automatically, straight from VS Code.",
-  "version": "1.0.0",
+  "version": "1.5.0",
   "publisher": "Veverke",
   "icon": "media/icon.png",
   "license": "SEE LICENSE IN LICENSE",
@@ -24,7 +24,18 @@
     "AI",
     "SCM Providers"
   ],
-  "keywords": ["copilot", "github", "pull request", "code review", "ai", "github pull request", "github pull request review", "pr automation", "fix with copilot", "code review automation"],
+  "keywords": [
+    "copilot",
+    "github",
+    "pull request",
+    "code review",
+    "ai",
+    "github pull request",
+    "github pull request review",
+    "pr automation",
+    "fix with copilot",
+    "code review automation"
+  ],
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
@@ -35,7 +46,7 @@
       },
       {
         "command": "copilotReviewer.clearPat",
-        "title": "Copilot Reviewer: Clear Stored GitHub PAT"
+        "title": "Copilot Reviewer: Clear Stored GitHub Authentication"
       }
     ],
     "configuration": {
@@ -44,7 +55,9 @@
       "properties": {
         "copilotReviewer.additionalBotLogins": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Additional GitHub login names to treat as trusted Copilot bot accounts (explicit allowlist only — no patterns)."
         },
@@ -52,6 +65,21 @@
           "type": "boolean",
           "default": false,
           "description": "When true, automatically reads the clipboard to pre-fill the PR URL input box if a GitHub PR URL is detected."
+        },
+        "copilotReviewer.prFilter": {
+          "type": "string",
+          "enum": [
+            "both",
+            "created",
+            "assigned"
+          ],
+          "enumDescriptions": [
+            "Show open PRs you authored or are assigned to (default).",
+            "Show only open PRs you created.",
+            "Show only open PRs you are assigned to."
+          ],
+          "default": "assigned",
+          "description": "Controls which open pull requests are shown in the PR picker. Only PRs matching the filter AND having open Copilot review comments are displayed."
         }
       }
     }
@@ -63,15 +91,20 @@
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src",
     "test": "vscode-test",
-    "test:unit": "vitest run"
+    "test:integration": "vscode-test",
+    "test:unit": "vitest run",
+    "test:unit:coverage": "vitest run --coverage",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
     "@types/vscode": "^1.90.0",
+    "@vitest/coverage-v8": "^4.1.6",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
     "eslint": "^9.39.3",
+    "husky": "^9.1.7",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.56.1",
     "vitest": "^4.1.5"

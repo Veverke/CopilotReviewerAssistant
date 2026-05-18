@@ -9,7 +9,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ### Added
 
 - Initial public release.
-- Fetches all pending Copilot review comments from a GitHub PR via the REST API.
+- Fetches all pending Copilot review comments (both *Commit Suggestion* and *Fix with Copilot*) from a GitHub PR via the REST API.
 - Generates an AI work plan per suggestion before applying any changes.
 - Webview panel with per-suggestion checklist, complexity tagging, and sort/group controls.
 - Applies fixes directly to the local workspace using the VS Code Language Model API.

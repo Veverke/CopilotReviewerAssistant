@@ -1,0 +1,17 @@
+echo "-------------------- git husky pre-push hook starting ----------------"
+
+echo "--- type check ---"
+npx tsc --noEmit
+EXIT_CODE=$?
+if [ $EXIT_CODE -ne 0 ]; then
+  echo "--------------pre-push hook failed: tsc --noEmit exited with code $EXIT_CODE-------------------"
+  exit $EXIT_CODE
+fi
+
+echo "--- unit tests + coverage ---"
+npm run test:unit:coverage
+EXIT_CODE=$?
+if [ $EXIT_CODE -ne 0 ]; then
+  echo "--------------pre-push hook failed: test:unit:coverage exited with code $EXIT_CODE-------------------"
+  exit $EXIT_CODE
+fi

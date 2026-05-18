@@ -15,25 +15,40 @@
  *  pushChanges()
  *    - calls repo.push() on the active repository
  *    - throws "Git repository not found" when no repo
+ *
+ *  getRemoteOwnerRepo()
+ *    - parses HTTPS and SSH remote URLs
+ *    - returns undefined for non-GitHub remotes or missing extension
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+vi.mock('child_process', () => ({
+  execFile: vi.fn((...args: any[]) => {
+    const cb = args[args.length - 1];
+    if (typeof cb === 'function') { cb(null, '', ''); }
+  }),
+}));
+
 vi.mock('vscode', () => ({
   extensions: { getExtension: vi.fn() },
   workspace: { workspaceFolders: undefined as any },
-  Uri: { joinPath: vi.fn() },
+  Uri: { file: vi.fn((p: string) => ({ fsPath: p })) },
 }));
 
-vi.mock('fs');
-
+import { execFile } from 'child_process';
 import * as vscode from 'vscode';
-import * as fs from 'fs';
-import { stageFiles, commitChanges, pushChanges, getRemoteOwnerRepo, detectBuildCommand, splitBuildCommand } from '../../gitHelper';
+import { stageFiles, commitChanges, pushChanges, getRemoteOwnerRepo, getAllRemoteOwnerRepos } from '../../gitHelper';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function makeRepo(rootFsPath = '/workspace', remotes: { name: string; fetchUrl?: string; pushUrl?: string }[] = []) {
+const TEST_OWNER = 'testorg';
+const TEST_REPO = 'testrepo';
+const TEST_REMOTE_URL = `https://github.com/${TEST_OWNER}/${TEST_REPO}.git`;
+
+function makeRepo(rootFsPath = '/workspace', remotes: { name: string; fetchUrl?: string; pushUrl?: string }[] = [
+  { name: 'origin', fetchUrl: TEST_REMOTE_URL },
+]) {
   return {
     rootUri: { fsPath: rootFsPath },
     state: { remotes },
@@ -57,28 +72,60 @@ describe('stageFiles', () => {
     (vscode.workspace as any).workspaceFolders = undefined;
   });
 
-  it('calls repo.add() with URIs built from rootUri + relative paths', async () => {
+  it('calls git add with absolute paths derived from rootUri + relative paths', async () => {
     const repo = makeRepo('/ws');
     vi.mocked(vscode.extensions.getExtension).mockReturnValue(
       makeGitExtension([repo]) as any
     );
-    vi.mocked(vscode.Uri.joinPath).mockImplementation(
-      (_base: any, p: string) => ({ fsPath: `/ws/${p}` }) as any
+
+    await stageFiles(['src/foo.ts', 'src/bar.ts'], TEST_OWNER, TEST_REPO);
+
+    const execFileMock = vi.mocked(execFile);
+    expect(execFileMock).toHaveBeenCalledOnce();
+    const [cmd, args] = execFileMock.mock.calls[0] as unknown as [string, string[], ...any[]];
+    expect(cmd).toBe('git');
+    expect(args[0]).toBe('add');
+    expect(args[1]).toBe('--');
+    expect(args.some((a: string) => /src.foo\.ts$/.test(a))).toBe(true);
+    expect(args.some((a: string) => /src.bar\.ts$/.test(a))).toBe(true);
+  });
+
+  it('uses the repo that matches the PR owner/repo remote, not the first workspace folder', async () => {
+    const wrongRepo = makeRepo('/ws/wrong-service', [
+      { name: 'origin', fetchUrl: 'https://github.com/testorg/wrong-service.git' },
+    ]);
+    const correctRepo = makeRepo('/ws/testrepo', [
+      { name: 'origin', fetchUrl: TEST_REMOTE_URL },
+    ]);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(
+      makeGitExtension([wrongRepo, correctRepo]) as any
     );
+    // Workspace folder points at wrong-service, but PR is for testrepo
+    (vscode.workspace as any).workspaceFolders = [{ uri: { fsPath: '/ws/wrong-service' } }];
 
-    await stageFiles(['src/foo.ts', 'src/bar.ts']);
+    await stageFiles(['src/foo.ts'], TEST_OWNER, TEST_REPO);
 
-    expect(repo.add).toHaveBeenCalledOnce();
-    const uris: any[] = repo.add.mock.calls[0][0];
-    expect(uris).toHaveLength(2);
-    expect(uris[0].fsPath).toBe('/ws/src/foo.ts');
-    expect(uris[1].fsPath).toBe('/ws/src/bar.ts');
+    const execFileMock = vi.mocked(execFile);
+    const [,, opts] = execFileMock.mock.calls[0] as unknown as [string, string[], { cwd: string }, ...any[]];
+    expect(opts.cwd).toBe('/ws/testrepo');
   });
 
   it('throws "Git repository not found" when the git extension is missing', async () => {
     vi.mocked(vscode.extensions.getExtension).mockReturnValue(undefined as any);
 
-    await expect(stageFiles(['src/foo.ts'])).rejects.toThrow(
+    await expect(stageFiles(['src/foo.ts'], TEST_OWNER, TEST_REPO)).rejects.toThrow(
+      'Git repository not found'
+    );
+  });
+
+  it('throws "Git repository not found" when the extension is inactive and activate() resolves to null', async () => {
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue({
+      isActive: false,
+      activate: vi.fn().mockResolvedValue(null),
+      exports: undefined,
+    } as any);
+
+    await expect(stageFiles(['src/foo.ts'], TEST_OWNER, TEST_REPO)).rejects.toThrow(
       'Git repository not found'
     );
   });
@@ -88,28 +135,54 @@ describe('stageFiles', () => {
       makeGitExtension([]) as any
     );
 
-    await expect(stageFiles(['src/foo.ts'])).rejects.toThrow(
+    await expect(stageFiles(['src/foo.ts'], TEST_OWNER, TEST_REPO)).rejects.toThrow(
       'Git repository not found'
     );
   });
 
-  it('picks the repository matching the workspace folder', async () => {
-    const repoA = makeRepo('/ws/project-a');
-    const repoB = makeRepo('/ws/project-b');
+  it('falls back to the active repository when findRepositoryRoot finds no remote match', async () => {
+    const repo = makeRepo('/ws/fallback', [
+      { name: 'origin', fetchUrl: 'https://github.com/other-org/other-repo.git' },
+    ]);
     vi.mocked(vscode.extensions.getExtension).mockReturnValue(
-      makeGitExtension([repoA, repoB]) as any
-    );
-    (vscode.workspace as any).workspaceFolders = [
-      { uri: { fsPath: '/ws/project-b' } },
-    ];
-    vi.mocked(vscode.Uri.joinPath).mockImplementation(
-      (_base: any, p: string) => ({ fsPath: `/ws/project-b/${p}` }) as any
+      makeGitExtension([repo]) as any
     );
 
-    await stageFiles(['src/foo.ts']);
+    await stageFiles(['src/foo.ts'], TEST_OWNER, TEST_REPO);
 
-    expect(repoB.add).toHaveBeenCalled();
-    expect(repoA.add).not.toHaveBeenCalled();
+    const execFileMock = vi.mocked(execFile);
+    const [, , opts] = execFileMock.mock.calls[0] as unknown as [string, string[], { cwd: string }, ...any[]];
+    expect(opts.cwd).toBe('/ws/fallback');
+  });
+
+  it('uses the workspace-folder repo when workspaceFolders is set and rootUri matches (getActiveRepository find branch)', async () => {
+    const repo = makeRepo('/ws/myproject', [
+      { name: 'origin', fetchUrl: 'https://github.com/other-org/other-repo.git' },
+    ]);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(
+      makeGitExtension([repo]) as any
+    );
+    (vscode.workspace as any).workspaceFolders = [{ uri: { fsPath: '/ws/myproject' } }];
+
+    await stageFiles(['src/foo.ts'], TEST_OWNER, TEST_REPO);
+
+    const [, , opts] = vi.mocked(execFile).mock.calls[0] as unknown as [string, string[], { cwd: string }];
+    expect(opts.cwd).toBe('/ws/myproject');
+  });
+
+  it('falls back to git.repositories[0] when workspaceFolders is set but no rootUri matches (getActiveRepository ?? branch)', async () => {
+    const repo = makeRepo('/ws/other', [
+      { name: 'origin', fetchUrl: 'https://github.com/other-org/other-repo.git' },
+    ]);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(
+      makeGitExtension([repo]) as any
+    );
+    (vscode.workspace as any).workspaceFolders = [{ uri: { fsPath: '/ws/different' } }];
+
+    await stageFiles(['src/foo.ts'], TEST_OWNER, TEST_REPO);
+
+    const [, , opts] = vi.mocked(execFile).mock.calls[0] as unknown as [string, string[], { cwd: string }];
+    expect(opts.cwd).toBe('/ws/other'); // repos[0] used as fallback
   });
 });
 
@@ -127,10 +200,14 @@ describe('commitChanges', () => {
       makeGitExtension([repo]) as any
     );
 
-    await commitChanges(['src/foo.ts', 'src/bar.ts'], 2);
+    await commitChanges(['src/foo.ts', 'src/bar.ts'], 2, TEST_OWNER, TEST_REPO);
 
-    expect(repo.commit).toHaveBeenCalledOnce();
-    const message: string = repo.commit.mock.calls[0][0];
+    const execFileMock = vi.mocked(execFile);
+    expect(execFileMock).toHaveBeenCalledOnce();
+    const [cmd, args] = execFileMock.mock.calls[0] as unknown as [string, string[], ...any[]];
+    expect(cmd).toBe('git');
+    expect(args[0]).toBe('commit');
+    const message = args.join(' ');
     expect(message).toContain('2');
     expect(message).toContain('src/foo.ts');
     expect(message).toContain('src/bar.ts');
@@ -142,18 +219,73 @@ describe('commitChanges', () => {
       makeGitExtension([repo]) as any
     );
 
-    await commitChanges(['src/foo.ts'], 1);
+    await commitChanges(['src/foo.ts'], 1, TEST_OWNER, TEST_REPO);
 
-    const message: string = repo.commit.mock.calls[0][0];
-    expect(message.startsWith('fix:')).toBe(true);
+    const [, args] = vi.mocked(execFile).mock.calls[0] as unknown as [string, string[], ...any[]];
+    const msgArg: string = args[2]; // git commit -m <message>
+    expect(msgArg.startsWith('fix:')).toBe(true);
+  });
+
+  it('prepends commitPrefix to commit message when provided', async () => {
+    const repo = makeRepo();
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(
+      makeGitExtension([repo]) as any
+    );
+
+    await commitChanges(['src/foo.ts'], 1, TEST_OWNER, TEST_REPO, [], '[abc-12345]');
+
+    const [, args] = vi.mocked(execFile).mock.calls[0] as unknown as [string, string[], ...any[]];
+    const msgArg: string = args[2];
+    expect(msgArg.startsWith('[abc-12345] fix:')).toBe(true);
+  });
+
+  it('does not prepend anything when commitPrefix is empty', async () => {
+    const repo = makeRepo();
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(
+      makeGitExtension([repo]) as any
+    );
+
+    await commitChanges(['src/foo.ts'], 1, TEST_OWNER, TEST_REPO, [], '');
+
+    const [, args] = vi.mocked(execFile).mock.calls[0] as unknown as [string, string[], ...any[]];
+    const msgArg: string = args[2];
+    expect(msgArg.startsWith('fix:')).toBe(true);
   });
 
   it('throws "Git repository not found" when no repo', async () => {
     vi.mocked(vscode.extensions.getExtension).mockReturnValue(undefined as any);
 
-    await expect(commitChanges(['src/foo.ts'], 1)).rejects.toThrow(
+    await expect(commitChanges(['src/foo.ts'], 1, TEST_OWNER, TEST_REPO)).rejects.toThrow(
       'Git repository not found'
     );
+  });
+
+  it('includes issues in commit message when provided', async () => {
+    const repo = makeRepo();
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(
+      makeGitExtension([repo]) as any
+    );
+    const issues = ['[src/foo.ts:10] Remove unused import', '[src/bar.ts:20] Fix null check'];
+
+    await commitChanges(['src/foo.ts', 'src/bar.ts'], 2, TEST_OWNER, TEST_REPO, issues);
+
+    const [, args] = vi.mocked(execFile).mock.calls[0] as unknown as [string, string[], ...any[]];
+    const msgArg: string = args[2];
+    expect(msgArg).toContain('Issues fixed:');
+    expect(msgArg).toContain('[src/foo.ts:10] Remove unused import');
+    expect(msgArg).toContain('[src/bar.ts:20] Fix null check');
+  });
+
+  it('omits the "Issues fixed:" section when issues array is empty', async () => {
+    const repo = makeRepo();
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(
+      makeGitExtension([repo]) as any
+    );
+
+    await commitChanges(['src/foo.ts'], 1, TEST_OWNER, TEST_REPO, []);
+
+    const [, args] = vi.mocked(execFile).mock.calls[0] as unknown as [string, string[], ...any[]];
+    expect(args[2]).not.toContain('Issues fixed:');
   });
 });
 
@@ -165,21 +297,26 @@ describe('pushChanges', () => {
     (vscode.workspace as any).workspaceFolders = undefined;
   });
 
-  it('calls repo.push() on the active repository', async () => {
-    const repo = makeRepo();
+  it('runs git push in the correct repo directory', async () => {
+    const repo = makeRepo('/ws/testrepo');
     vi.mocked(vscode.extensions.getExtension).mockReturnValue(
       makeGitExtension([repo]) as any
     );
 
-    await pushChanges();
+    await pushChanges(TEST_OWNER, TEST_REPO);
 
-    expect(repo.push).toHaveBeenCalledOnce();
+    const execFileMock = vi.mocked(execFile);
+    expect(execFileMock).toHaveBeenCalledOnce();
+    const [cmd, args, opts] = execFileMock.mock.calls[0] as unknown as [string, string[], { cwd: string }, ...any[]];
+    expect(cmd).toBe('git');
+    expect(args).toContain('push');
+    expect(opts.cwd).toBe('/ws/testrepo');
   });
 
   it('throws "Git repository not found" when no repo', async () => {
     vi.mocked(vscode.extensions.getExtension).mockReturnValue(undefined as any);
 
-    await expect(pushChanges()).rejects.toThrow('Git repository not found');
+    await expect(pushChanges(TEST_OWNER, TEST_REPO)).rejects.toThrow('Git repository not found');
   });
 });
 
@@ -247,154 +384,169 @@ describe('getRemoteOwnerRepo', () => {
   });
 });
 
-// ─── detectBuildCommand ───────────────────────────────────────────────────────
+// ─── commitChanges (fallback path) ────────────────────────────────────────────────
 
-describe('detectBuildCommand', () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  function mockFs({
-    existsMap = {} as Record<string, boolean>,
-    pkgJson = undefined as Record<string, unknown> | undefined,
-    dirEntries = [] as string[],
-  }) {
-    // Normalize to forward slashes so tests work on both Windows and Unix
-    vi.mocked(fs.existsSync).mockImplementation((p) => {
-      const key = (p as string).replace(/\\/g, '/');
-      return existsMap[key] ?? false;
-    });
-    vi.mocked(fs.readFileSync).mockImplementation(() => {
-      if (pkgJson) { return JSON.stringify(pkgJson); }
-      throw new Error('not found');
-    });
-    vi.mocked(fs.readdirSync).mockReturnValue(dirEntries as any);
-  }
-
-  it('returns npm run build when package.json has a build script', () => {
-    mockFs({
-      existsMap: { '/ws/package.json': true },
-      pkgJson: { scripts: { build: 'tsc' } },
-    });
-    expect(detectBuildCommand('/ws')).toBe('npm run build');
+describe('commitChanges (fallback when findRepositoryRoot has no match)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (vscode.workspace as any).workspaceFolders = undefined;
   });
 
-  it('prefers build over compile in package.json scripts', () => {
-    mockFs({
-      existsMap: { '/ws/package.json': true },
-      pkgJson: { scripts: { build: 'webpack', compile: 'tsc' } },
-    });
-    expect(detectBuildCommand('/ws')).toBe('npm run build');
-  });
+  it('falls back to the active repository when no repo remote matches owner/repo', async () => {
+    // Repo exists but its remote does not match TEST_OWNER/TEST_REPO
+    const repo = makeRepo('/ws/other', [
+      { name: 'origin', fetchUrl: 'https://github.com/other-org/other-repo.git' },
+    ]);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(
+      makeGitExtension([repo]) as any
+    );
 
-  it('returns npm run compile when only compile script exists', () => {
-    mockFs({
-      existsMap: { '/ws/package.json': true },
-      pkgJson: { scripts: { compile: 'tsc' } },
-    });
-    expect(detectBuildCommand('/ws')).toBe('npm run compile');
-  });
+    // findRepositoryRoot returns undefined → getActiveRepository returns repos[0]
+    await commitChanges(['src/foo.ts'], 1, TEST_OWNER, TEST_REPO);
 
-  it('falls back to npx tsc --noEmit when tsconfig.json exists but no matching npm script', () => {
-    mockFs({
-      existsMap: { '/ws/package.json': true, '/ws/tsconfig.json': true },
-      pkgJson: { scripts: { test: 'vitest' } },
-    });
-    expect(detectBuildCommand('/ws')).toBe('npx tsc --noEmit');
-  });
-
-  it('returns npx tsc --noEmit when only tsconfig.json exists', () => {
-    mockFs({ existsMap: { '/ws/tsconfig.json': true } });
-    expect(detectBuildCommand('/ws')).toBe('npx tsc --noEmit');
-  });
-
-  it('returns dotnet build for a .sln file', () => {
-    mockFs({ existsMap: {}, dirEntries: ['MyApp.sln'] });
-    expect(detectBuildCommand('/ws')).toBe('dotnet build --nologo -q');
-  });
-
-  it('returns dotnet build for a .csproj file', () => {
-    mockFs({ existsMap: {}, dirEntries: ['MyApp.csproj'] });
-    expect(detectBuildCommand('/ws')).toBe('dotnet build --nologo -q');
-  });
-
-  it('returns cargo check for a Cargo.toml', () => {
-    mockFs({ existsMap: { '/ws/Cargo.toml': true } });
-    expect(detectBuildCommand('/ws')).toBe('cargo check');
-  });
-
-  it('returns mvn compile for a pom.xml', () => {
-    mockFs({ existsMap: { '/ws/pom.xml': true } });
-    expect(detectBuildCommand('/ws')).toBe('mvn compile -q');
-  });
-
-  it('returns undefined when no build system is found', () => {
-    mockFs({ existsMap: {}, dirEntries: ['README.md'] });
-    expect(detectBuildCommand('/ws')).toBeUndefined();
-  });
-
-  it('falls through gracefully when package.json is malformed', () => {
-    vi.mocked(fs.existsSync).mockImplementation((p) => p === '/ws/package.json');
-    vi.mocked(fs.readFileSync).mockReturnValue('not json' as any);
-    vi.mocked(fs.readdirSync).mockReturnValue([] as any);
-    // Should not throw; falls through to return undefined
-    expect(() => detectBuildCommand('/ws')).not.toThrow();
-  });
-
-  it('does not use scripts entry when scripts is not an object (JSON type guard)', () => {
-    mockFs({
-      existsMap: { '/ws/package.json': true, '/ws/tsconfig.json': true },
-      pkgJson: { scripts: 'invalid' },
-    });
-    // Falls through to tsconfig.json detection since scripts is not a valid object
-    expect(detectBuildCommand('/ws')).toBe('npx tsc --noEmit');
-  });
-
-  it('does not use scripts entry when a script value is not a string', () => {
-    mockFs({
-      existsMap: { '/ws/package.json': true, '/ws/tsconfig.json': true },
-      pkgJson: { scripts: { build: 42 } },
-    });
-    // Falls through since build value is not a string
-    expect(detectBuildCommand('/ws')).toBe('npx tsc --noEmit');
+    const [, args, opts] = vi.mocked(execFile).mock.calls[0] as unknown as [string, string[], { cwd: string }, ...any[]];
+    expect(args[0]).toBe('commit');
+    expect(opts.cwd).toBe('/ws/other');
   });
 });
 
-// ─── splitBuildCommand (Security Issue #2) ────────────────────────────────────
+// ─── pushChanges (fallback path) ───────────────────────────────────────────────────
 
-describe('splitBuildCommand', () => {
-  it('splits "npm run build" into executable npm and args [run, build]', () => {
-    expect(splitBuildCommand('npm run build')).toEqual({ executable: 'npm', args: ['run', 'build'] });
+describe('pushChanges (fallback when findRepositoryRoot has no match)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (vscode.workspace as any).workspaceFolders = undefined;
   });
 
-  it('splits "npx tsc --noEmit" correctly', () => {
-    expect(splitBuildCommand('npx tsc --noEmit')).toEqual({ executable: 'npx', args: ['tsc', '--noEmit'] });
+  it('falls back to the active repository when no repo remote matches owner/repo', async () => {
+    const repo = makeRepo('/ws/other', [
+      { name: 'origin', fetchUrl: 'https://github.com/other-org/other-repo.git' },
+    ]);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(
+      makeGitExtension([repo]) as any
+    );
+
+    await pushChanges(TEST_OWNER, TEST_REPO);
+
+    const [, args, opts] = vi.mocked(execFile).mock.calls[0] as unknown as [string, string[], { cwd: string }, ...any[]];
+    expect(args[0]).toBe('push');
+    expect(opts.cwd).toBe('/ws/other');
+  });
+});
+
+// ─── getAllRemoteOwnerRepos ──────────────────────────────────────────────────────────
+
+describe('getAllRemoteOwnerRepos', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (vscode.workspace as any).workspaceFolders = undefined;
   });
 
-  it('splits "cargo check" correctly', () => {
-    expect(splitBuildCommand('cargo check')).toEqual({ executable: 'cargo', args: ['check'] });
+  it('returns an empty array when the git extension is not found', async () => {
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(undefined as any);
+
+    const result = await getAllRemoteOwnerRepos();
+    expect(result).toEqual([]);
   });
 
-  it('splits "dotnet build --nologo -q" correctly', () => {
-    expect(splitBuildCommand('dotnet build --nologo -q')).toEqual({
-      executable: 'dotnet',
-      args: ['build', '--nologo', '-q'],
+  it('returns owner/repo pairs from all repositories with a GitHub remote', async () => {
+    const repo1 = makeRepo('/ws/a', [{ name: 'origin', fetchUrl: 'https://github.com/org1/project-a.git' }]);
+    const repo2 = makeRepo('/ws/b', [{ name: 'origin', fetchUrl: 'https://github.com/org2/project-b.git' }]);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(
+      makeGitExtension([repo1, repo2]) as any
+    );
+
+    const result = await getAllRemoteOwnerRepos();
+
+    expect(result).toEqual([
+      { owner: 'org1', repo: 'project-a' },
+      { owner: 'org2', repo: 'project-b' },
+    ]);
+  });
+
+  it('skips repositories that have no remotes', async () => {
+    const withRemote = makeRepo('/ws/a', [{ name: 'origin', fetchUrl: 'https://github.com/org/repo.git' }]);
+    const noRemote = makeRepo('/ws/b', []);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(
+      makeGitExtension([withRemote, noRemote]) as any
+    );
+
+    const result = await getAllRemoteOwnerRepos();
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({ owner: 'org', repo: 'repo' });
+  });
+
+  it('skips repositories whose remote URL is not a GitHub URL', async () => {
+    const github = makeRepo('/ws/a', [{ name: 'origin', fetchUrl: 'https://github.com/org/repo.git' }]);
+    const gitlab = makeRepo('/ws/b', [{ name: 'origin', fetchUrl: 'https://gitlab.com/org/other.git' }]);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(
+      makeGitExtension([github, gitlab]) as any
+    );
+
+    const result = await getAllRemoteOwnerRepos();
+
+    expect(result).toHaveLength(1);
+    expect(result[0].owner).toBe('org');
+  });
+
+  it('prefers the origin remote over other remotes', async () => {
+    const repo = makeRepo('/ws/a', [
+      { name: 'upstream', fetchUrl: 'https://github.com/upstream-org/repo.git' },
+      { name: 'origin', fetchUrl: 'https://github.com/my-org/repo.git' },
+    ]);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(
+      makeGitExtension([repo]) as any
+    );
+
+    const result = await getAllRemoteOwnerRepos();
+
+    expect(result).toEqual([{ owner: 'my-org', repo: 'repo' }]);
+  });
+
+  it('parses SSH remote URLs correctly', async () => {
+    const repo = makeRepo('/ws/a', [{ name: 'origin', fetchUrl: 'git@github.com:my-org/ssh-repo.git' }]);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(
+      makeGitExtension([repo]) as any
+    );
+
+    const result = await getAllRemoteOwnerRepos();
+
+    expect(result).toEqual([{ owner: 'my-org', repo: 'ssh-repo' }]);
+  });
+
+  it('uses the first remote when no origin remote exists in the repository', async () => {
+    const repo = makeRepo('/ws/a', [
+      { name: 'upstream', fetchUrl: 'https://github.com/upstream-org/upstream-repo.git' },
+    ]);
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue(
+      makeGitExtension([repo]) as any
+    );
+
+    const result = await getAllRemoteOwnerRepos();
+
+    expect(result).toEqual([{ owner: 'upstream-org', repo: 'upstream-repo' }]);
+  });
+
+  it('waits for repositories to appear when git has none on initial activation', async () => {
+    const repo = makeRepo('/ws/a', [{ name: 'origin', fetchUrl: 'https://github.com/org/late-repo.git' }]);
+    const api = { repositories: [] as ReturnType<typeof makeRepo>[] };
+    const ext = { getAPI: vi.fn().mockReturnValue(api) };
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue({ isActive: true, exports: ext } as any);
+
+    // Invoke the setInterval callback in the next microtask (not synchronously)
+    // so that `const interval = setInterval(...)` is assigned before fn() runs,
+    // avoiding the temporal dead zone. This lets V8 track the polling-loop body.
+    const setIntervalSpy = vi.spyOn(global, 'setInterval').mockImplementation((fn: any) => {
+      api.repositories.push(repo); // simulate repos appearing before the first tick
+      queueMicrotask(() => fn());   // defer so `interval` is in scope when fn executes
+      return 999 as any;
     });
-  });
-
-  it('returns undefined for an unlisted executable', () => {
-    expect(splitBuildCommand('bash -c "rm -rf /"')).toBeUndefined();
-  });
-
-  it('returns undefined for "sh -c evil"', () => {
-    expect(splitBuildCommand('sh -c evil')).toBeUndefined();
-  });
-
-  it('returns undefined for an empty string', () => {
-    expect(splitBuildCommand('')).toBeUndefined();
-  });
-
-  it('handles leading/trailing whitespace', () => {
-    const result = splitBuildCommand('  npm run build  ');
-    expect(result?.executable).toBe('npm');
-    expect(result?.args).toEqual(['run', 'build']);
+    try {
+      const result = await getAllRemoteOwnerRepos();
+      expect(result).toEqual([{ owner: 'org', repo: 'late-repo' }]);
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
   });
 });

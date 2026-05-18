@@ -100,12 +100,12 @@ describe('pickFromOpenPrs', () => {
   beforeEach(() => vi.clearAllMocks());
 
   function makeOpenPr(n: number): OpenPr {
-    return { pullNumber: n, title: `Fix issue ${n}`, htmlUrl: `https://github.com/owner/repo/pull/${n}` };
+    return { owner: 'owner', repo: 'repo', pullNumber: n, title: `Fix issue ${n}`, htmlUrl: `https://github.com/owner/repo/pull/${n}` };
   }
 
   it('shows a QuickPick with one item per PR', async () => {
     vi.mocked(vscode.window.showQuickPick).mockResolvedValue(undefined as any);
-    await pickFromOpenPrs([makeOpenPr(1), makeOpenPr(2)], 'owner', 'repo');
+    await pickFromOpenPrs([makeOpenPr(1), makeOpenPr(2)]);
     expect(vscode.window.showQuickPick).toHaveBeenCalledOnce();
     const items: any[] = vi.mocked(vscode.window.showQuickPick).mock.calls[0][0] as any[];
     expect(items).toHaveLength(2);
@@ -113,15 +113,15 @@ describe('pickFromOpenPrs', () => {
 
   it('returns PrCoordinates for the selected PR', async () => {
     vi.mocked(vscode.window.showQuickPick).mockResolvedValue(
-      { label: '#7 — Fix issue 7', pullNumber: 7 } as any
+      { label: '#7 — Fix issue 7', owner: 'owner', repo: 'repo', pullNumber: 7 } as any
     );
-    const result = await pickFromOpenPrs([makeOpenPr(7)], 'owner', 'repo');
+    const result = await pickFromOpenPrs([makeOpenPr(7)]);
     expect(result).toEqual({ owner: 'owner', repo: 'repo', pullNumber: 7 });
   });
 
   it('returns undefined when the user cancels the QuickPick', async () => {
     vi.mocked(vscode.window.showQuickPick).mockResolvedValue(undefined as any);
-    const result = await pickFromOpenPrs([makeOpenPr(1)], 'owner', 'repo');
+    const result = await pickFromOpenPrs([makeOpenPr(1)]);
     expect(result).toBeUndefined();
   });
 
@@ -130,7 +130,7 @@ describe('pickFromOpenPrs', () => {
     vi.mocked(vscode.window.showInputBox).mockResolvedValue(
       'https://github.com/owner/repo/pull/42'
     );
-    const result = await pickFromOpenPrs([], 'owner', 'repo');
+    const result = await pickFromOpenPrs([]);
     expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
     expect(result).toEqual({ owner: 'owner', repo: 'repo', pullNumber: 42 });
   });
@@ -138,15 +138,25 @@ describe('pickFromOpenPrs', () => {
   it('returns undefined when the PR list is empty and user cancels the fallback input', async () => {
     vi.mocked(vscode.env.clipboard.readText).mockResolvedValue('');
     vi.mocked(vscode.window.showInputBox).mockResolvedValue(undefined);
-    const result = await pickFromOpenPrs([], 'owner', 'repo');
+    const result = await pickFromOpenPrs([]);
     expect(result).toBeUndefined();
   });
 
-  it('QuickPick label format is "#N — <title>"', async () => {
+  it('QuickPick label format is "#N — <title>" for a single repo', async () => {
     vi.mocked(vscode.window.showQuickPick).mockResolvedValue(undefined as any);
-    await pickFromOpenPrs([makeOpenPr(3)], 'owner', 'repo');
+    await pickFromOpenPrs([makeOpenPr(3)]);
     const items: any[] = vi.mocked(vscode.window.showQuickPick).mock.calls[0][0] as any[];
     expect(items[0].label).toBe('#3 — Fix issue 3');
+  });
+
+  it('QuickPick label includes "owner/repo" prefix when PRs span multiple repos', async () => {
+    const pr1: OpenPr = { owner: 'org1', repo: 'repoA', pullNumber: 1, title: 'Fix A', htmlUrl: '' };
+    const pr2: OpenPr = { owner: 'org2', repo: 'repoB', pullNumber: 2, title: 'Fix B', htmlUrl: '' };
+    vi.mocked(vscode.window.showQuickPick).mockResolvedValue(undefined as any);
+    await pickFromOpenPrs([pr1, pr2]);
+    const items: any[] = vi.mocked(vscode.window.showQuickPick).mock.calls[0][0] as any[];
+    expect(items[0].label).toBe('org1/repoA #1 — Fix A');
+    expect(items[1].label).toBe('org2/repoB #2 — Fix B');
   });
 });
 
@@ -215,5 +225,17 @@ describe('promptForPrUrl clipboard gating', () => {
 
     const callOpts: any = vi.mocked(vscode.window.showInputBox).mock.calls[0][0];
     expect(callOpts.value).toBeUndefined();
+  });
+
+  it('treats undefined from config.get as false (preFillFromClipboard not set)', async () => {
+    vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+      get: vi.fn().mockReturnValue(undefined),
+    } as any);
+    vi.mocked(vscode.window.showInputBox).mockResolvedValue(undefined);
+
+    await promptForPrUrl();
+
+    // config returned undefined → preFill defaults to false → clipboard never read
+    expect(vscode.env.clipboard.readText).not.toHaveBeenCalled();
   });
 });

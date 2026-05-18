@@ -613,6 +613,68 @@ details[open] summary::before {
   to { transform: rotate(360deg); }
 }
 
+/* ─── Apply Fixes blocking overlay ──────────────────────────────────────── */
+
+#fix-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fix-overlay-card {
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border, #444);
+  border-radius: 8px;
+  padding: 32px 40px;
+  text-align: center;
+  max-width: 380px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
+.fix-overlay-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid var(--vscode-progressBar-background, #0078d4);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin: 0 auto 18px;
+}
+
+.fix-overlay-msg {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  color: var(--vscode-editor-foreground);
+}
+
+.fix-overlay-sub {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+  margin: 0 0 22px;
+  line-height: 1.5;
+}
+
+.fix-overlay-done-btn {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  border-radius: 4px;
+  padding: 6px 22px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.fix-overlay-done-btn:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
 .fix-applying {
   color: var(--vscode-descriptionForeground);
 }
@@ -1100,4 +1162,48 @@ a:focus-visible {
   padding: 10px 16px;
   max-width: 480px;
   text-align: center;
+}
+
+/* ─── Reviewer filter row ────────────────────────────────────────────────── */
+
+.reviewer-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 6px;
+  border-top: 1px solid var(--vscode-panel-border);
+  margin-top: 6px;
+}
+
+.reviewer-filter-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.reviewer-check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-size: 0.85em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  user-select: none;
+}
+
+.reviewer-check-label:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.reviewer-check-label input[type="checkbox"] {
+  margin: 0;
+}
+
+.card.reviewer-hidden {
+  display: none !important;
 }
