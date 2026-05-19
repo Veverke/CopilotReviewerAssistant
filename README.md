@@ -97,6 +97,10 @@ That is a solid starting point. But several things remain unresolved once the re
 - Very large PRs may hit language model context limits. Reduce the selection to smaller batches if this happens.
 - The "Push & Mark Resolved" button resolves threads sequentially via the GitHub GraphQL API. On PRs with many comments this may take a few seconds.
 
+## Documentation
+
+- [User Guide](docs/user-guide.md) — detailed setup and workflow walkthrough.
+
 ## Release Notes
 
 ### 1.0.0
