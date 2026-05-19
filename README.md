@@ -1,5 +1,13 @@
 # Copilot Reviewer Assistant
 
+[![VS Code Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/Veverke.copilot-reviewer-assistant?label=VS%20Code%20Marketplace&logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=Veverke.copilot-reviewer-assistant)
+[![Installs](https://img.shields.io/visual-studio-marketplace/i/Veverke.copilot-reviewer-assistant?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=Veverke.copilot-reviewer-assistant)
+[![Rating](https://img.shields.io/visual-studio-marketplace/r/Veverke.copilot-reviewer-assistant?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=Veverke.copilot-reviewer-assistant)
+[![Open VSX](https://img.shields.io/open-vsx/v/Veverke/copilot-reviewer-assistant?label=Open%20VSX&logo=vscodium&logoColor=white)](https://open-vsx.org/extension/Veverke/copilot-reviewer-assistant)
+[![CI](https://github.com/Veverke/CopilotReviewerAssistant/actions/workflows/ci.yml/badge.svg)](https://github.com/Veverke/CopilotReviewerAssistant/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/Veverke/CopilotReviewerAssistant/graph/badge.svg)](https://codecov.io/gh/Veverke/CopilotReviewerAssistant)
+[![License](https://img.shields.io/github/license/Veverke/CopilotReviewerAssistant)](LICENSE)
+
 > **GitHub Copilot leaves review comments you still have to action in the browser. This extension brings all of them into VS Code — reviewed, organised, and resolved without leaving your editor.**
 
 ## What GitHub Copilot Review already does
