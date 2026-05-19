@@ -16,3 +16,4 @@ vitest.config.*
 **/.vscode-test.*
 docs/**
 intent.md
+coverage/**
