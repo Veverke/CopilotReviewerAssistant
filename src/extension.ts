@@ -437,13 +437,35 @@ export function activate(context: vscode.ExtensionContext) {
 // This method is called when your extension is deactivated
 export function deactivate() {}
 
+/**
+ * Extracts the severity level that GitHub Copilot embeds as the first line of
+ * its review-comment body (e.g. "High", "Medium", "Low").
+ * Returns `null` when the first line is not a recognised severity keyword so
+ * that callers can fall back to local heuristics.
+ */
+export function extractGitHubSeverity(body: string): ComplexityScore | null {
+	const firstLine = body.trimStart().split('\n')[0].trim().toLowerCase();
+	if (firstLine === 'high')   { return 'high'; }
+	if (firstLine === 'medium') { return 'medium'; }
+	if (firstLine === 'low')    { return 'low'; }
+	return null;
+}
+
 // Complexity classifier using the same regex patterns as classifyIssue() in workPlanGenerator.ts.
 // ABSTRACTION issues require multi-layer changes → high.
 // REGISTRATION issues touch multiple files → medium.
 // ASYNC/IO issues are typically localised → medium.
 // UNUSED SYMBOL issues are single-symbol renames/deletions → low.
 // Default → low.
+// When the comment body starts with a GitHub Copilot severity chip ("High" /
+// "Medium" / "Low"), that value is used directly; local heuristics only apply
+// as a fallback when no such chip is present.
 export function classifyComplexity(comment: import('./githubApi').ReviewComment): ComplexityScore {
+	const githubSeverity = extractGitHubSeverity(comment.body);
+	if (githubSeverity !== null) {
+		return githubSeverity;
+	}
+
 	const body = comment.body.toLowerCase();
 	const diff = comment.diffHunk.toLowerCase();
 	const text = `${body}\n${diff}`;
