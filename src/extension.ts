@@ -490,7 +490,7 @@ export function buildCopilotChatPrompt(comments: import('./githubApi').ReviewCom
 
 export function buildReplyBody(commentPath: string, startLine: number, endLine: number): string {
 	return [
-		'Fixed by [Copilot Reviewer Assistant VS Code Extension](https://marketplace.visualstudio.com/items?itemName=Veverke.CopilotReviewerAssistant).',
+		'Fixed by [Copilot Reviewer Assistant VS Code Extension](https://marketplace.visualstudio.com/items?itemName=Veverke.copilot-reviewer-assistant).',
 		'Files changed:',
 		`  - File: ${commentPath} Lines: [${startLine}-${endLine}]`,
 	].join('\n');
